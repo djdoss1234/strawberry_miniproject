@@ -1,10 +1,30 @@
-# E0509 Robot with RH-P12-RN-A Gripper
+# E0509 + RH-P12-RN-A Gripper Description
 
-Doosan E0509 robot arm integrated with ROBOTIS RH-P12-RN-A gripper for ROS2 Humble.
+Doosan E0509 로봇팔과 ROBOTIS RH-P12-RN-A 그리퍼를 결합한 ROS2 패키지
 
-## Prerequisites
+## 개요
 
-Add to your `~/.bashrc`:
+이 패키지는 Doosan E0509 6축 로봇팔에 ROBOTIS RH-P12-RN-A 그리퍼를 장착한 통합 로봇 시스템을 위한 URDF, launch 파일, 그리퍼 컨트롤러를 제공합니다.
+
+## 특징
+
+- ✅ E0509 + 그리퍼 결합 URDF/XACRO
+- ✅ Doosan Virtual Robot (에뮬레이터) 지원
+- ✅ ros2_control 기반 조인트 제어
+- ✅ 그리퍼 stroke 기반 제어 (DART Platform 호환)
+- ✅ RViz 시각화
+- ✅ Gazebo 시뮬레이션 지원
+
+## 의존성
+
+- ROS2 Humble
+- Gazebo Fortress (Ignition Gazebo 6)
+- [doosan-robot2](https://github.com/doosan-robotics/doosan-robot2)
+- [RH-P12-RN-A](https://github.com/ROBOTIS-GIT/RH-P12-RN-A)
+
+## 사전 설정
+
+`~/.bashrc`에 다음 내용 추가:
 ```bash
 export ROS_DISTRO='humble'
 source /opt/ros/humble/setup.bash
@@ -12,39 +32,73 @@ source ~/doosan_ws/install/setup.bash
 export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:~/doosan_ws/install/rh_p12_rn_a_description/share:~/doosan_ws/install/dsr_description2/share
 ```
 
-Then reload:
+적용:
 ```bash
 source ~/.bashrc
 ```
 
-## Installation
+## 설치
 ```bash
+# 워크스페이스 생성
+mkdir -p ~/doosan_ws/src
 cd ~/doosan_ws/src
+
+# 의존 패키지 클론
+git clone https://github.com/doosan-robotics/doosan-robot2.git
+git clone https://github.com/ROBOTIS-GIT/RH-P12-RN-A.git
+
+# 이 패키지 클론
 git clone https://github.com/fhekwn549/e0509_gripper_description.git
+
+# 빌드
 cd ~/doosan_ws
-colcon build --symlink-install --packages-select e0509_gripper_description
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
 source install/setup.bash
-```
-
-## Usage
-
-### RViz + Virtual Robot (Doosan Emulator)
-```bash
-ros2 launch e0509_gripper_description bringup.launch.py mode:=virtual host:=127.0.0.1 port:=12345
-```
-
-### RViz + Real Robot
-```bash
-ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<ROBOT_IP> port:=12345
 ```
 
 ---
 
-## Gazebo Simulation Setup
+## 사용법 (RViz + Virtual Robot)
 
-### Required: Modify dsr_controller2_gz.yaml
+### 1. RViz 시각화 (조인트 슬라이더)
+```bash
+ros2 launch e0509_gripper_description display.launch.py
+```
 
-Before running Gazebo simulation, update the controller config:
+### 2. Virtual Robot 실행 (에뮬레이터)
+```bash
+ros2 launch e0509_gripper_description bringup.launch.py mode:=virtual host:=127.0.0.1 port:=12345
+```
+
+### 3. 로봇 제어
+```bash
+# 조인트 이동
+ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [30.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0}"
+
+# 홈 위치
+ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel: 30.0, acc: 30.0}"
+```
+
+### 4. 그리퍼 제어 (RViz + Virtual Robot)
+```bash
+# 그리퍼 열기
+ros2 service call /dsr01/gripper/open std_srvs/srv/Trigger
+
+# 그리퍼 닫기
+ros2 service call /dsr01/gripper/close std_srvs/srv/Trigger
+
+# Stroke 값으로 제어 (0=열림, 700=완전히 닫힘)
+ros2 topic pub /dsr01/gripper/stroke std_msgs/msg/Int32 "{data: 350}" --once
+```
+
+---
+
+## 사용법 (Gazebo 시뮬레이션)
+
+### 1. dsr_controller2_gz.yaml 수정 (필수)
+
+Gazebo 시뮬레이션 실행 전, 컨트롤러 설정 파일 수정:
 ```bash
 cat > ~/doosan_ws/src/doosan-robot2/dsr_controller2/config/dsr_controller2_gz.yaml << 'YAML'
 /**:
@@ -83,57 +137,93 @@ cat > ~/doosan_ws/src/doosan-robot2/dsr_controller2/config/dsr_controller2_gz.ya
 YAML
 ```
 
-Then rebuild dsr_controller2:
+수정 후 리빌드:
 ```bash
 cd ~/doosan_ws
 colcon build --symlink-install --packages-select dsr_controller2
 source install/setup.bash
 ```
 
-### Launch Gazebo Simulation
+### 2. Gazebo 시뮬레이션 실행
 ```bash
 ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01
 ```
 
-To disable RViz:
+RViz 없이 실행:
 ```bash
 ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01 gui:=false
 ```
 
----
-
-## Control Commands
-
-### Robot Arm Control
+### 3. 로봇 제어 (Gazebo)
 ```bash
-# Move to position
+# 로봇 팔 이동
 ros2 topic pub --once /dsr01/joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{
   joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6],
   points: [{positions: [0.5, 0.3, 0.3, 0.0, 0.5, 0.0], time_from_start: {sec: 2}}]
 }"
 ```
 
-### Gripper Control (Gazebo)
+### 4. 그리퍼 제어 (Gazebo)
 ```bash
-# Open gripper
+# 그리퍼 열기
 ros2 topic pub --once /dsr01/gripper_controller/commands std_msgs/msg/Float64MultiArray "{data: [0.0, 0.0, 0.0, 0.0]}"
 
-# Close gripper
+# 그리퍼 닫기
 ros2 topic pub --once /dsr01/gripper_controller/commands std_msgs/msg/Float64MultiArray "{data: [1.1, 1.1, 1.1, 1.1]}"
+
+# 절반 닫기
+ros2 topic pub --once /dsr01/gripper_controller/commands std_msgs/msg/Float64MultiArray "{data: [0.55, 0.55, 0.55, 0.55]}"
 ```
 
-## File Structure
+---
+
+## 그리퍼 제어 인터페이스
+
+### RViz + Virtual Robot
+| 인터페이스 | 타입 | 설명 |
+|-----------|------|------|
+| `/dsr01/gripper/open` | Service (Trigger) | 그리퍼 열기 |
+| `/dsr01/gripper/close` | Service (Trigger) | 그리퍼 닫기 |
+| `/dsr01/gripper/stroke` | Topic (Int32) | Stroke 값 (0~700) |
+
+### Gazebo Simulation
+| 인터페이스 | 타입 | 설명 |
+|-----------|------|------|
+| `/dsr01/gripper_controller/commands` | Topic (Float64MultiArray) | Joint position (0.0~1.1) |
+
+---
+
+## 파일 구조
 ```
 e0509_gripper_description/
-├── config/
-│   └── gz_controllers.yaml      # Gazebo controller config
-├── launch/
-│   ├── bringup.launch.py        # RViz + real/virtual robot
-│   ├── bringup_gazebo.launch.py # Gazebo + RViz simulation
-│   └── gazebo.launch.py         # Gazebo only
-├── urdf/
-│   └── e0509_with_gripper.urdf.xacro
 ├── CMakeLists.txt
 ├── package.xml
-└── README.md
+├── README.md
+├── config/
+│   └── gz_controllers.yaml          # Gazebo 컨트롤러 설정
+├── urdf/
+│   └── e0509_with_gripper.urdf.xacro
+├── launch/
+│   ├── display.launch.py            # RViz 시각화
+│   ├── bringup.launch.py            # Virtual/Real 로봇 실행
+│   ├── bringup_gazebo.launch.py     # Gazebo + RViz 시뮬레이션
+│   └── gazebo.launch.py             # Gazebo 전용
+├── scripts/
+│   └── gripper_joint_publisher.py   # 그리퍼 컨트롤러
+└── rviz/
+    └── display.rviz
 ```
+
+## 환경
+
+- Ubuntu 22.04
+- ROS2 Humble
+- Gazebo Fortress (Ignition Gazebo 6)
+
+## License
+
+Apache-2.0
+
+## Author
+
+fhekwn549

@@ -32,7 +32,7 @@ git clone https://github.com/doosan-robotics/doosan-robot2.git
 git clone https://github.com/ROBOTIS-GIT/RH-P12-RN-A.git
 
 # 이 패키지 클론
-git clone https://github.com/<YOUR_USERNAME>/e0509_gripper_description.git
+git clone https://github.com/fhekwn549/e0509_gripper_description.git
 
 # 빌드
 cd ~/doosan_ws

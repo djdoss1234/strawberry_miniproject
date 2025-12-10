@@ -207,9 +207,9 @@ ros2 topic pub --once /e0509_gripper/gripper_controller/commands std_msgs/msg/Fl
 ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01
 ```
 
-RViz 없이 실행:
+RViz 함께 실행:
 ```bash
-ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01 gui:=false
+ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01 gui:=true
 ```
 
 ### 3_1. 로봇 제어

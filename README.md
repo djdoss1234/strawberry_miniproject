@@ -104,7 +104,7 @@ ros2 launch e0509_gripper_description display.launch.py
 ros2 launch e0509_gripper_description bringup.launch.py mode:=virtual host:=127.0.0.1 port:=12345
 ```
 
-### 3. 로봇 제어
+### 2_1. 로봇 제어
 ```bash
 # 조인트 이동
 ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [30.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0}"
@@ -113,7 +113,7 @@ ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [30.0,
 ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel: 30.0, acc: 30.0}"
 ```
 
-### 4. 그리퍼 제어 (RViz + Virtual Robot)
+### 2_2. 그리퍼 제어
 ```bash
 # 그리퍼 열기
 ros2 service call /dsr01/gripper/open std_srvs/srv/Trigger
@@ -127,7 +127,7 @@ ros2 topic pub /dsr01/gripper/stroke std_msgs/msg/Int32 "{data: 350}" --once
 
 ---
 
-## 사용법 (Gazebo 시뮬레이션)
+## 사용법 (Gazebo + Virtual Robot)
 
 ### 1. dsr_controller2_gz.yaml 수정 (필수)
 
@@ -177,7 +177,32 @@ colcon build --symlink-install --packages-select dsr_controller2
 source install/setup.bash
 ```
 
-### 2. Gazebo 시뮬레이션 실행
+### 2. Gazebo 시각화 실행
+이 모드에서는 ros2_control 토픽으로만 제어 가능합니다. (Doosan 서비스 사용 불가)
+```bash
+ros2 launch e0509_gripper_description gazebo.launch.py
+```
+
+
+### 2_1. 로봇 제어
+
+```bash
+ros2 topic pub --once /e0509_gripper/joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{
+  joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6],
+  points: [{positions: [0.5, 0.3, 0.3, 0.0, 0.5, 0.0], time_from_start: {sec: 2}}]
+}"
+```
+
+### 2_2. 그리퍼 제어
+```bash
+# 그리퍼 열기
+ros2 topic pub --once /e0509_gripper/gripper_controller/commands std_msgs/msg/Float64MultiArray "{data: [0.0, 0.0, 0.0, 0.0]}"
+
+# 그리퍼 닫기
+ros2 topic pub --once /e0509_gripper/gripper_controller/commands std_msgs/msg/Float64MultiArray "{data: [1.1, 1.1, 1.1, 1.1]}"
+```
+
+### 3. Gazebo 시뮬레이션 실행
 ```bash
 ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01
 ```
@@ -187,7 +212,7 @@ RViz 없이 실행:
 ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01 gui:=false
 ```
 
-### 3. 로봇 제어 (Gazebo)
+### 3_1. 로봇 제어
 ```bash
 # 로봇 팔 이동
 ros2 topic pub --once /dsr01/joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{
@@ -196,7 +221,7 @@ ros2 topic pub --once /dsr01/joint_trajectory_controller/joint_trajectory trajec
 }"
 ```
 
-### 4. 그리퍼 제어 (Gazebo)
+### 3_2. 그리퍼 제어
 ```bash
 # 그리퍼 열기
 ros2 topic pub --once /dsr01/gripper_controller/commands std_msgs/msg/Float64MultiArray "{data: [0.0, 0.0, 0.0, 0.0]}"

@@ -19,6 +19,7 @@ install(DIRECTORY
 # Install Python scripts
 install(PROGRAMS
   scripts/gripper_joint_publisher.py
+  scripts/gripper.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

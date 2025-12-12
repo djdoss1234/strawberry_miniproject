@@ -10,6 +10,7 @@ Doosan E0509 로봇팔과 ROBOTIS RH-P12-RN-A 그리퍼를 결합한 ROS2 패키
 
 - ✅ E0509 + 그리퍼 결합 URDF/XACRO
 - ✅ Doosan Virtual Robot (에뮬레이터) 지원
+- ✅ **실제 로봇 그리퍼 제어** (Tool Flange Serial + Modbus RTU)
 - ✅ ros2_control 기반 조인트 제어
 - ✅ 그리퍼 stroke 기반 제어 (DART Platform 호환)
 - ✅ RViz 시각화
@@ -235,6 +236,51 @@ ros2 topic pub --once /dsr01/gripper_controller/commands std_msgs/msg/Float64Mul
 
 ---
 
+## 사용법 (실제 로봇 + 그리퍼)
+
+실제 Doosan E0509 로봇에 RH-P12-RN-A 그리퍼를 연결하여 제어합니다.
+그리퍼는 로봇의 **Tool Flange Serial** 포트를 통해 **Modbus RTU** 프로토콜로 통신합니다.
+
+### 1. 실제 로봇 실행
+```bash
+ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<로봇IP> port:=12345
+```
+
+### 2. 그리퍼 제어 (gripper.py)
+```bash
+# 그리퍼 열기
+ros2 run e0509_gripper_description gripper.py open
+
+# 그리퍼 닫기
+ros2 run e0509_gripper_description gripper.py close
+
+# 특정 위치로 이동 (0=열림, 700=닫힘)
+ros2 run e0509_gripper_description gripper.py pos 350
+
+# 다른 namespace 사용 시
+ros2 run e0509_gripper_description gripper.py --ns dsr01 open
+```
+
+### 3. 그리퍼 통신 사양
+| 항목 | 값 |
+|------|-----|
+| 프로토콜 | Modbus RTU |
+| 통신 포트 | Tool Flange Serial |
+| Baudrate | 57600 |
+| Data bits | 8 |
+| Parity | None |
+| Stop bits | 1 |
+| Slave ID | 1 |
+
+### 4. 주요 Modbus 레지스터
+| 레지스터 | 주소 | 설명 |
+|---------|------|------|
+| Torque Enable | 256 (0x0100) | 1=활성화 |
+| Goal Position | 282 (0x011A) | 0~700 (2 registers) |
+| Goal Current | 275 (0x0113) | 기본값 400 |
+
+---
+
 ## 그리퍼 제어 인터페이스
 
 ### RViz + Virtual Robot
@@ -267,7 +313,8 @@ e0509_gripper_description/
 │   ├── bringup_gazebo.launch.py     # Gazebo + RViz 시뮬레이션
 │   └── gazebo.launch.py             # Gazebo 전용
 ├── scripts/
-│   └── gripper_joint_publisher.py   # 그리퍼 컨트롤러
+│   ├── gripper_joint_publisher.py   # RViz 시각화용 그리퍼 컨트롤러
+│   └── gripper.py                   # 실제 그리퍼 제어 (Modbus RTU)
 └── rviz/
     └── display.rviz
 ```

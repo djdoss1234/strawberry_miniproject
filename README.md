@@ -297,6 +297,39 @@ ros2 run e0509_gripper_description gripper.py --ns dsr01 open
 
 ---
 
+## Digital Twin (Isaac Sim 연동)
+
+실제 로봇의 joint_states를 Isaac Sim에서 실시간으로 시각화합니다.
+ROS2와 Isaac Sim의 Python 버전이 다르므로 (ROS2: 3.10, Isaac Sim: 3.11) 파일 기반 통신을 사용합니다.
+
+### 실행 방법
+
+**터미널 1: 로봇 실행**
+```bash
+ros2 launch e0509_gripper_description bringup.launch.py mode:=virtual
+```
+
+**터미널 2: ROS2 Bridge 실행** (시스템 Python 사용)
+```bash
+source /opt/ros/humble/setup.bash
+source ~/doosan_ws/install/setup.bash
+cd ~/doosan_ws/src/e0509_gripper_description/scripts
+python3 digital_twin_bridge.py
+```
+
+**터미널 3: Isaac Sim 디지털 트윈** (CoWriteBotRL 레포 필요)
+```bash
+source ~/isaacsim_env/bin/activate
+cd ~/CoWriteBotRL
+python pen_grasp_rl/scripts/digital_twin.py
+```
+
+### 동작 원리
+1. `digital_twin_bridge.py`: ROS2에서 `/dsr01/joint_states`를 구독하여 `/tmp/doosan_joint_states.json`에 저장
+2. `digital_twin.py`: JSON 파일을 읽어 Isaac Sim 로봇에 적용
+
+---
+
 ## 파일 구조
 ```
 e0509_gripper_description/
@@ -314,7 +347,8 @@ e0509_gripper_description/
 │   └── gazebo.launch.py             # Gazebo 전용
 ├── scripts/
 │   ├── gripper_joint_publisher.py   # RViz 시각화용 그리퍼 컨트롤러
-│   └── gripper.py                   # 실제 그리퍼 제어 (Modbus RTU)
+│   ├── gripper.py                   # 실제 그리퍼 제어 (Modbus RTU)
+│   └── digital_twin_bridge.py       # Isaac Sim 연동용 ROS2 브릿지
 └── rviz/
     └── display.rviz
 ```

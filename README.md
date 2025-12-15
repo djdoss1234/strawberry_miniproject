@@ -246,20 +246,35 @@ ros2 topic pub --once /dsr01/gripper_controller/commands std_msgs/msg/Float64Mul
 ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<로봇IP> port:=12345
 ```
 
-### 2. 그리퍼 제어 (gripper.py)
+### 2. 로봇팔 제어 (MoveJoint 서비스)
+**주의: Doosan 로봇은 도(degree) 단위를 사용합니다.**
 ```bash
+# 조인트 이동 (joint_1~6, 단위: 도)
+ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0}"
+
+# 홈 위치로 이동
+ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel: 30.0, acc: 30.0}"
+```
+
+### 3. 그리퍼 제어 (gripper.py)
+**주의: ros2 run이 아닌 직접 python3로 실행합니다.**
+```bash
+cd ~/doosan_ws/src/e0509_gripper_description/scripts
+
 # 그리퍼 열기
-ros2 run e0509_gripper_description gripper.py open
+python3 gripper.py open
 
 # 그리퍼 닫기
-ros2 run e0509_gripper_description gripper.py close
+python3 gripper.py close
 
 # 특정 위치로 이동 (0=열림, 700=닫힘)
-ros2 run e0509_gripper_description gripper.py pos 350
+python3 gripper.py pos 350
 
 # 다른 namespace 사용 시
-ros2 run e0509_gripper_description gripper.py --ns dsr01 open
+python3 gripper.py --ns dsr01 open
 ```
+
+> **참고**: 시리얼 포트 열기 실패 시 자동으로 강제 닫기 후 재시도합니다 (최대 3회).
 
 ### 3. 그리퍼 통신 사양
 | 항목 | 값 |
@@ -297,37 +312,78 @@ ros2 run e0509_gripper_description gripper.py --ns dsr01 open
 
 ---
 
-## Digital Twin (Isaac Sim 연동)
+## Digital Twin (실제 로봇 + Isaac Sim + RViz 동기화)
 
-실제 로봇의 joint_states를 Isaac Sim에서 실시간으로 시각화합니다.
-ROS2와 Isaac Sim의 Python 버전이 다르므로 (ROS2: 3.10, Isaac Sim: 3.11) 파일 기반 통신을 사용합니다.
+**실제 로봇**, **RViz**, **Isaac Sim** 세 곳에서 로봇을 동시에 동기화하여 제어합니다.
+로봇팔(6축)과 그리퍼(4축)가 모두 동기화됩니다.
 
-### 실행 방법
+### 특징
+- ✅ 실제 로봇 ↔ RViz ↔ Isaac Sim 실시간 동기화
+- ✅ 로봇팔 + 그리퍼 모두 지원 (10축)
+- ✅ ROS2와 Isaac Sim의 Python 버전이 달라도 동작 (파일 기반 통신)
 
-**터미널 1: 로봇 실행**
-```bash
-ros2 launch e0509_gripper_description bringup.launch.py mode:=virtual
-```
+### 전체 실행 방법
 
-**터미널 2: ROS2 Bridge 실행** (시스템 Python 사용)
+**터미널 1: 실제 로봇 Bringup**
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/doosan_ws/install/setup.bash
-cd ~/doosan_ws/src/e0509_gripper_description/scripts
+ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<로봇IP>
+```
+> Virtual 모드의 경우: `mode:=virtual host:=127.0.0.1`
+
+**터미널 2: ROS2 Bridge 실행**
+```bash
+source /opt/ros/humble/setup.bash
+source ~/doosan_ws/install/setup.bash
+cd ~/IsaacLab/pen_grasp_rl/scripts
 python3 digital_twin_bridge.py
 ```
+> Bridge는 arm + gripper 조인트를 누적 저장하여 10축 모두 동기화합니다.
 
 **터미널 3: Isaac Sim 디지털 트윈** (CoWriteBotRL 레포 필요)
 [CoWriteBotRL](https://github.com/KERNEL3-2/CoWriteBotRL)
 ```bash
 source ~/isaacsim_env/bin/activate
-cd ~/CoWriteBotRL
+cd ~/IsaacLab
 python pen_grasp_rl/scripts/digital_twin.py
 ```
 
+**터미널 4: 로봇 제어 테스트**
+```bash
+source /opt/ros/humble/setup.bash
+source ~/doosan_ws/install/setup.bash
+
+# 로봇팔 이동 (도 단위)
+ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0}"
+
+# 그리퍼 열기
+cd ~/doosan_ws/src/e0509_gripper_description/scripts
+python3 gripper.py open
+
+# 그리퍼 닫기
+python3 gripper.py close
+```
+
 ### 동작 원리
-1. `digital_twin_bridge.py`: ROS2에서 `/dsr01/joint_states`를 구독하여 `/tmp/doosan_joint_states.json`에 저장
-2. `digital_twin.py`: JSON 파일을 읽어 Isaac Sim 로봇에 적용
+```
+[실제 로봇/에뮬레이터] → [ROS2 joint_states 토픽]
+                              ↓
+                    [digital_twin_bridge.py]
+                              ↓
+                    [/tmp/doosan_joint_states.json]
+                              ↓
+                    [digital_twin.py (Isaac Sim)]
+```
+
+1. **joint_state_broadcaster**: 로봇팔(joint_1~6) 상태 발행
+2. **gripper_joint_publisher**: 그리퍼(gripper_rh_*) 상태 발행
+3. **digital_twin_bridge.py**: 두 publisher의 데이터를 **누적 저장** (이름 기반)
+4. **digital_twin.py**: JSON 파일을 읽어 Isaac Sim 로봇에 적용
+
+### 주의사항
+- 그리퍼 제어는 반드시 `gripper.py`로 해야 실제 로봇 + RViz + Isaac Sim이 모두 동기화됩니다.
+- 토픽으로 직접 그리퍼를 제어하면 실제 로봇은 움직이지 않습니다.
 
 ---
 

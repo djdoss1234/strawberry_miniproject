@@ -96,8 +96,8 @@ class GripperNode(Node):
         rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
         return future.result()
 
-    def serial_open(self, baudrate=57600):
-        """시리얼 포트 열기"""
+    def serial_open(self, baudrate=57600, max_retries=3):
+        """시리얼 포트 열기 (실패 시 강제 닫고 재시도)"""
         req = FlangeSerialOpen.Request()
         req.port = self.port
         req.baudrate = baudrate
@@ -105,11 +105,19 @@ class GripperNode(Node):
         req.parity = 0
         req.stopbits = 1
 
-        result = self.call_sync(self.cli_open, req)
-        if result and result.success:
-            self.get_logger().info('시리얼 포트 열림')
-            return True
-        self.get_logger().error('시리얼 포트 열기 실패')
+        for attempt in range(max_retries):
+            result = self.call_sync(self.cli_open, req)
+            if result and result.success:
+                self.get_logger().info('시리얼 포트 열림')
+                return True
+
+            # 실패 시 강제로 닫고 재시도
+            if attempt < max_retries - 1:
+                self.get_logger().warn(f'시리얼 포트 열기 실패, 강제 닫기 후 재시도 ({attempt + 1}/{max_retries})')
+                self.serial_close()
+                time.sleep(0.3)  # 포트가 완전히 닫힐 때까지 대기
+
+        self.get_logger().error('시리얼 포트 열기 실패 (재시도 횟수 초과)')
         return False
 
     def serial_close(self):

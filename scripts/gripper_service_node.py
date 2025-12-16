@@ -15,7 +15,7 @@ Doosan E0509 로봇의 Tool Flange Serial을 통해 Modbus RTU로 제어
 import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
-from dsr_msgs2.srv import FlangeSerialOpen, FlangeSerialClose, FlangeSerialWrite
+from e0509_gripper_description.srv import FlangeSerialOpen, FlangeSerialClose, FlangeSerialWrite
 from std_srvs.srv import Trigger
 from std_msgs.msg import Int32
 import threading

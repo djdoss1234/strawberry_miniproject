@@ -11,10 +11,12 @@ Doosan E0509 로봇팔과 ROBOTIS RH-P12-RN-A 그리퍼를 결합한 ROS2 패키
 - ✅ E0509 + 그리퍼 결합 URDF/XACRO
 - ✅ Doosan Virtual Robot (에뮬레이터) 지원
 - ✅ **실제 로봇 그리퍼 제어** (Tool Flange Serial + Modbus RTU)
+- ✅ **ROS2 서비스/토픽 기반 그리퍼 제어** (gripper_service_node)
 - ✅ ros2_control 기반 조인트 제어
 - ✅ 그리퍼 stroke 기반 제어 (DART Platform 호환)
 - ✅ RViz 시각화
 - ✅ Gazebo 시뮬레이션 지원
+- ✅ Digital Twin (실제 로봇 + RViz + Isaac Sim 동기화)
 
 ## 의존성
 
@@ -256,8 +258,23 @@ ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 
 ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel: 30.0, acc: 30.0}"
 ```
 
-### 3. 그리퍼 제어 (gripper.py)
-**주의: ros2 run이 아닌 직접 python3로 실행합니다.**
+### 3. 그리퍼 제어 (ROS2 서비스/토픽)
+
+bringup.launch.py 실행 시 그리퍼 서비스 노드가 자동으로 시작됩니다.
+
+```bash
+# 그리퍼 열기
+ros2 service call /dsr01/gripper/open std_srvs/srv/Trigger
+
+# 그리퍼 닫기
+ros2 service call /dsr01/gripper/close std_srvs/srv/Trigger
+
+# 특정 위치로 이동 (0=열림, 700=닫힘)
+ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --once
+```
+
+### 3-1. 그리퍼 제어 (CLI 방식, 대안)
+서비스 노드 없이 직접 실행하는 방식입니다.
 ```bash
 cd ~/doosan_ws/src/e0509_gripper_description/scripts
 
@@ -276,7 +293,7 @@ python3 gripper.py --ns dsr01 open
 
 > **참고**: 시리얼 포트 열기 실패 시 자동으로 강제 닫기 후 재시도합니다 (최대 3회).
 
-### 3. 그리퍼 통신 사양
+### 4. 그리퍼 통신 사양
 | 항목 | 값 |
 |------|-----|
 | 프로토콜 | Modbus RTU |
@@ -287,7 +304,7 @@ python3 gripper.py --ns dsr01 open
 | Stop bits | 1 |
 | Slave ID | 1 |
 
-### 4. 주요 Modbus 레지스터
+### 5. 주요 Modbus 레지스터
 | 레지스터 | 주소 | 설명 |
 |---------|------|------|
 | Torque Enable | 256 (0x0100) | 1=활성화 |
@@ -298,12 +315,13 @@ python3 gripper.py --ns dsr01 open
 
 ## 그리퍼 제어 인터페이스
 
-### RViz + Virtual Robot
+### RViz + Virtual Robot + Real Robot
 | 인터페이스 | 타입 | 설명 |
 |-----------|------|------|
 | `/dsr01/gripper/open` | Service (Trigger) | 그리퍼 열기 |
 | `/dsr01/gripper/close` | Service (Trigger) | 그리퍼 닫기 |
-| `/dsr01/gripper/stroke` | Topic (Int32) | Stroke 값 (0~700) |
+| `/dsr01/gripper/position_cmd` | Topic (Int32) | 위치 명령 (0~700) |
+| `/dsr01/gripper/stroke` | Topic (Int32) | 현재 stroke 발행 (RViz용) |
 
 ### Gazebo Simulation
 | 인터페이스 | 타입 | 설명 |
@@ -358,14 +376,13 @@ source ~/doosan_ws/install/setup.bash
 ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0}"
 
 # 그리퍼 열기
-cd ~/doosan_ws/src/e0509_gripper_description/scripts
-python3 gripper.py open
+ros2 service call /dsr01/gripper/open std_srvs/srv/Trigger
 
 # 그리퍼 닫기
-python3 gripper.py close
+ros2 service call /dsr01/gripper/close std_srvs/srv/Trigger
 
 # 그리퍼 특정 위치 (0=열림, 700=닫힘)
-python3 gripper.py pos 350
+ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --once
 ```
 
 ### 동작 원리
@@ -385,8 +402,8 @@ python3 gripper.py pos 350
 4. **digital_twin.py**: JSON 파일을 읽어 Isaac Sim 로봇에 적용
 
 ### 주의사항
-- 그리퍼 제어는 반드시 `gripper.py`로 해야 실제 로봇 + RViz + Isaac Sim이 모두 동기화됩니다.
-- 토픽으로 직접 그리퍼를 제어하면 실제 로봇은 움직이지 않습니다.
+- `bringup.launch.py` 실행 시 `gripper_service_node`가 자동 시작되어 ROS2 서비스/토픽으로 그리퍼를 제어할 수 있습니다.
+- 서비스(`/dsr01/gripper/open`, `/dsr01/gripper/close`) 또는 토픽(`/dsr01/gripper/position_cmd`)으로 제어하면 실제 로봇 + RViz + Isaac Sim이 모두 동기화됩니다.
 
 ---
 
@@ -407,7 +424,8 @@ e0509_gripper_description/
 │   └── gazebo.launch.py             # Gazebo 전용
 ├── scripts/
 │   ├── gripper_joint_publisher.py   # RViz 시각화용 그리퍼 컨트롤러
-│   ├── gripper.py                   # 실제 그리퍼 제어 (Modbus RTU)
+│   ├── gripper.py                   # 실제 그리퍼 제어 CLI (Modbus RTU)
+│   ├── gripper_service_node.py      # 그리퍼 ROS2 서비스 노드
 │   └── digital_twin_bridge.py       # Isaac Sim 연동용 ROS2 브릿지
 └── rviz/
     └── display.rviz

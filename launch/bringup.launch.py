@@ -100,6 +100,16 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Gripper Service Node (ROS2 서비스로 그리퍼 제어)
+    gripper_service_node = Node(
+        package='e0509_gripper_description',
+        executable='gripper_service_node.py',
+        name='gripper_service_node',
+        namespace=LaunchConfiguration('name'),
+        parameters=[{'mode': LaunchConfiguration('mode')}],
+        output='screen',
+    )
+
     # RViz
     rviz_node = Node(
         package="rviz2",
@@ -138,11 +148,11 @@ def generate_launch_description():
         actions=[joint_state_broadcaster_spawner]
     )
 
-    # Delay RViz until controller is ready
+    # Delay RViz and Gripper Service until controller is ready
     delay_rviz = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=robot_controller_spawner,
-            on_exit=[rviz_node],
+            on_exit=[rviz_node, gripper_service_node],
         )
     )
 

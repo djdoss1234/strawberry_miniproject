@@ -22,3 +22,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Calibration data (user-specific)
+scripts/sim2real/*.npz
+scripts/sim2real/*.npy
+scripts/sim2real/calibration_images/

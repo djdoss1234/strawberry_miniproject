@@ -6,6 +6,13 @@ Doosan E0509 로봇팔과 ROBOTIS RH-P12-RN-A 그리퍼를 결합한 ROS2 패키
 
 이 패키지는 Doosan E0509 6축 로봇팔에 ROBOTIS RH-P12-RN-A 그리퍼를 장착한 통합 로봇 시스템을 위한 URDF, launch 파일, 그리퍼 컨트롤러를 제공합니다.
 
+## 관련 레포지토리
+
+| 레포지토리 | 설명 |
+|-----------|------|
+| **[sim2real](https://github.com/fhekwn549/sim2real)** | Sim2Real 실행 코드 (펜 감지, 캘리브레이션, 정책 실행) |
+| **[CoWriteBotRL](https://github.com/KERNEL3-2/CoWriteBotRL)** | Isaac Lab 기반 강화학습 환경 및 학습 스크립트 |
+
 ## 특징
 
 - E0509 + 그리퍼 결합 URDF/XACRO
@@ -354,75 +361,29 @@ ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --on
 
 ---
 
-## Hand-Eye Calibration (Eye-in-Hand)
+## Eye-to-Hand Calibration
 
-카메라가 그리퍼에 부착된 Eye-in-Hand 구조에서 카메라-TCP 간 변환 행렬을 계산합니다.
+카메라가 외부에 고정된 Eye-to-Hand 구조에서 카메라 → 로봇 베이스 변환 행렬을 계산합니다.
+
+> **참고**: 캘리브레이션 및 Sim2Real 실행 코드는 [sim2real 레포](https://github.com/fhekwn549/sim2real)로 이동했습니다.
+> 자세한 가이드는 [SIM2REAL_GUIDE.md](https://github.com/fhekwn549/sim2real/blob/main/sim2real/SIM2REAL_GUIDE.md)를 참조하세요.
 
 ### 구조
 ```
-[카메라] ──(T_cam2tcp)──> [TCP/그리퍼] ──(T_tcp2base)──> [로봇 베이스]
+[카메라 (고정)] ──(T_cam2base)──> [로봇 베이스]
+                                      ↑
+                              [TCP/그리퍼]
 ```
 
-### 필요 장비
-- RealSense D455F 카메라 (USB 3.0 권장)
-- 체커보드 (6x9 내부 코너, 25mm 칸 크기)
-
-### 캘리브레이션 실행
-
-**터미널 1: 로봇 연결**
+### 간단 실행
 ```bash
-ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<로봇IP>
-```
+# 터미널 1: 로봇 연결
+ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=192.168.137.100
 
-**터미널 2: 슬라이더 로봇 제어** (선택사항)
-```bash
-cd ~/doosan_ws/src/e0509_gripper_description/scripts
-python3 robot_slider_control.py
+# 터미널 2: 캘리브레이션 (sim2real 레포)
+cd ~/sim2real/sim2real
+python3 calibrate_eye_to_hand.py
 ```
-- 슬라이더로 TCP 위치(X,Y,Z,RX,RY,RZ) 직접 제어
-- Space: 현재 로봇 위치로 동기화
-- H: 홈 위치로 이동
-
-**터미널 3: 캘리브레이션**
-```bash
-cd ~/doosan_ws/src/e0509_gripper_description/scripts/sim2real
-python3 manual_hand_eye_calibration.py
-```
-
-### 캘리브레이션 방법
-1. 체커보드를 **고정된 위치**에 배치 (테이블 위 등)
-2. 슬라이더 또는 ros2 명령으로 로봇 자세 조절
-3. 카메라 화면에서 체커보드가 보이면 **'s' 키로 저장**
-4. 다양한 자세로 **15개 이상** 저장 (회전 변화 30° 이상)
-5. **'c' 키로 캘리브레이션 수행**
-
-### 키 조작
-| 키 | 기능 |
-|---|---|
-| s | 현재 자세 저장 |
-| c | 캘리브레이션 수행 |
-| d | 마지막 데이터 삭제 |
-| r | 모든 데이터 초기화 |
-| i | 회전 변화량 확인 |
-| q | 종료 |
-
-### 결과 파일
-```
-scripts/sim2real/
-├── calibration_result.npz    # 전체 결과 (npz)
-├── T_cam2tcp.npy             # 4x4 변환 행렬 (카메라→TCP)
-├── R_cam2tcp.npy             # 3x3 회전 행렬
-├── t_cam2tcp.npy             # 위치 벡터
-├── camera_matrix.npy         # 카메라 내부 파라미터
-└── dist_coeffs.npy           # 왜곡 계수
-```
-
-### 검증
-```bash
-python3 verify_calibration.py
-```
-- 여러 자세에서 고정 체커보드의 로봇 좌표 일관성 확인
-- 편차 10mm 이하: 우수 / 30mm 이하: 양호
 
 ---
 
@@ -448,14 +409,12 @@ e0509_gripper_description/
 │   ├── gripper_service_node.py      # 그리퍼 ROS2 서비스 노드
 │   ├── gazebo_bridge.py             # Gazebo 디지털트윈 브릿지
 │   ├── digital_twin_bridge.py       # Isaac Sim 연동용 ROS2 브릿지
-│   ├── robot_slider_control.py      # TCP 슬라이더 제어 GUI
-│   └── sim2real/                    # Hand-Eye Calibration
-│       ├── manual_hand_eye_calibration.py  # 수동 캘리브레이션
-│       ├── verify_calibration.py           # 캘리브레이션 검증
-│       └── coordinate_transformer.py       # 좌표 변환 유틸리티
+│   └── robot_slider_control.py      # TCP 슬라이더 제어 GUI
 └── rviz/
     └── display.rviz
 ```
+
+> **Sim2Real 코드**: 캘리브레이션, 펜 감지, 정책 실행 코드는 [sim2real 레포](https://github.com/fhekwn549/sim2real)를 참조하세요.
 
 ## 환경
 

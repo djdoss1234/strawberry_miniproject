@@ -152,7 +152,7 @@ ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --on
 
 ### 1. 실제 로봇 실행
 ```bash
-ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<로봇IP>
+ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
 ```
 
 ### 2. 로봇팔 제어 (MoveJoint 서비스)
@@ -267,7 +267,7 @@ ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual hos
 ### 실행 방법
 
 ```bash
-ros2 launch e0509_gripper_description bringup_real_gazebo.launch.py mode:=real host:=<로봇IP> rviz:=false
+ros2 launch e0509_gripper_description bringup_real_gazebo.launch.py mode:=real host:=<robot_ip> rviz:=false
 ```
 
 > RViz도 함께 보려면 `rviz:=true` (기본값)
@@ -314,7 +314,7 @@ ros2 service call /dsr01/gripper/close std_srvs/srv/Trigger
 
 **터미널 1: 실제 로봇 Bringup**
 ```bash
-ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<로봇IP>
+ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
 ```
 > Virtual 모드의 경우: `mode:=virtual`
 
@@ -378,7 +378,7 @@ ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --on
 ### 간단 실행
 ```bash
 # 터미널 1: 로봇 연결
-ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=192.168.137.100
+ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
 
 # 터미널 2: 캘리브레이션 (sim2real 레포)
 cd ~/sim2real/sim2real

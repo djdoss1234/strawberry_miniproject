@@ -1,7 +1,7 @@
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler, TimerAction
-from launch.event_handlers import OnProcessExit
+from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
@@ -125,7 +125,11 @@ def generate_launch_description():
         package="controller_manager",
         namespace=LaunchConfiguration('name'),
         executable="spawner",
-        arguments=["joint_state_broadcaster", "-c", "controller_manager"],
+        arguments=[
+            "joint_state_broadcaster",
+            "-c", "controller_manager",
+            "--controller-manager-timeout", "120"
+        ],
     )
 
     # Doosan Controller
@@ -133,26 +137,29 @@ def generate_launch_description():
         package="controller_manager",
         namespace=LaunchConfiguration('name'),
         executable="spawner",
-        arguments=["dsr_controller2", "-c", "controller_manager"],
+        arguments=[
+            "dsr_controller2",
+            "-c", "controller_manager",
+            "--controller-manager-timeout", "120"
+        ],
     )
 
-    # Delay control_node start by 7 seconds to allow emulator to initialize
+    # Delay control_node start by 7 seconds to allow emulator to initialize (virtual mode)
     delayed_control_node = TimerAction(
         period=7.0,
         actions=[control_node]
     )
 
-    # Delay spawners to start after control_node
-    delayed_joint_state_broadcaster = TimerAction(
-        period=10.0,
-        actions=[joint_state_broadcaster_spawner]
-    )
-
-    # Delay RViz and Gripper Service until controller is ready
-    delay_rviz = RegisterEventHandler(
-        event_handler=OnProcessExit(
-            target_action=robot_controller_spawner,
-            on_exit=[rviz_node, gripper_service_node],
+    # Wait for control_node to start, then spawn joint_state_broadcaster after 5 seconds
+    delay_jsb_after_control_node = RegisterEventHandler(
+        OnProcessStart(
+            target_action=control_node,
+            on_start=[
+                TimerAction(
+                    period=5.0,
+                    actions=[joint_state_broadcaster_spawner],
+                )
+            ],
         )
     )
 
@@ -164,12 +171,20 @@ def generate_launch_description():
         )
     )
 
+    # Delay RViz and Gripper Service until controller is ready
+    delay_rviz = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=robot_controller_spawner,
+            on_exit=[rviz_node, gripper_service_node],
+        )
+    )
+
     nodes = [
         run_emulator_node,
         robot_state_pub_node,
         gripper_joint_pub_node,
         delayed_control_node,
-        delayed_joint_state_broadcaster,
+        delay_jsb_after_control_node,
         delay_controller,
         delay_rviz,
     ]

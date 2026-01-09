@@ -173,15 +173,18 @@ def generate_launch_description():
         ' use_gazebo:=true',
     ])
 
-    # Gazebo 실행
+    # Gazebo 실행 (use_sim_time=false로 실제 로봇과 시간 동기화)
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             FindPackageShare('ros_gz_sim'), '/launch/gz_sim.launch.py'
         ]),
-        launch_arguments={'gz_args': '-r -v 3 empty.sdf'}.items(),
+        launch_arguments={
+            'gz_args': '-r -v 3 empty.sdf',
+            'use_sim_time': 'false'
+        }.items(),
     )
 
-    # Gazebo robot state publisher
+    # Gazebo robot state publisher (TF publish 비활성화 - 실제 로봇 TF와 충돌 방지)
     gazebo_robot_state_pub = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -190,6 +193,7 @@ def generate_launch_description():
         parameters=[
             {'robot_description': gazebo_robot_description},
             {'use_sim_time': False},
+            {'publish_frequency': 0.0},  # TF publish 비활성화
         ],
     )
 
@@ -212,6 +216,7 @@ def generate_launch_description():
         executable='spawner',
         namespace=gazebo_ns,
         arguments=['joint_state_broadcaster', '-c', 'controller_manager'],
+        parameters=[{'use_sim_time': False}],
     )
 
     gz_joint_trajectory_controller = Node(
@@ -219,6 +224,7 @@ def generate_launch_description():
         executable='spawner',
         namespace=gazebo_ns,
         arguments=['joint_trajectory_controller', '-c', 'controller_manager'],
+        parameters=[{'use_sim_time': False}],
     )
 
     gz_gripper_controller = Node(
@@ -226,6 +232,7 @@ def generate_launch_description():
         executable='spawner',
         namespace=gazebo_ns,
         arguments=['gripper_controller', '-c', 'controller_manager'],
+        parameters=[{'use_sim_time': False}],
     )
 
     # ========== 브릿지 노드 ==========

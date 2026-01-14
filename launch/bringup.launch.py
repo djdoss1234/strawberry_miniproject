@@ -18,12 +18,14 @@ def generate_launch_description():
         DeclareLaunchArgument('model', default_value='e0509',     description='ROBOT_MODEL'),
         DeclareLaunchArgument('color', default_value='white',     description='ROBOT_COLOR'),
         DeclareLaunchArgument('rt_host', default_value='192.168.137.50', description='ROBOT_RT_IP'),
+        DeclareLaunchArgument('rviz',  default_value='true',      description='Launch RViz'),
     ]
 
     pkg_path = get_package_share_directory('e0509_gripper_description')
     xacro_file = os.path.join(pkg_path, 'urdf', 'e0509_with_gripper.urdf.xacro')
 
     mode = LaunchConfiguration('mode')
+    rviz = LaunchConfiguration('rviz')
 
     # Robot description with all parameters
     robot_description_content = Command([
@@ -110,7 +112,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    # RViz
+    # RViz (조건부 실행)
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
@@ -118,6 +120,7 @@ def generate_launch_description():
         name="rviz2",
         output="log",
         arguments=["-d", rviz_config_file],
+        condition=IfCondition(rviz),
     )
 
     # Joint State Broadcaster

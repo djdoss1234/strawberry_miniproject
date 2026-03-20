@@ -57,6 +57,7 @@ install(PROGRAMS
   scripts/digital_twin_bridge.py
   scripts/robot_slider_control.py
   scripts/curobo_planner_node.py
+  scripts/marker_tracking_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

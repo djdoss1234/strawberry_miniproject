@@ -56,6 +56,7 @@ install(PROGRAMS
   scripts/gripper.py
   scripts/digital_twin_bridge.py
   scripts/robot_slider_control.py
+  scripts/curobo_planner_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -26,6 +26,7 @@
 #include "dsr_msgs2/srv/flange_serial_open.hpp"
 #include "dsr_msgs2/srv/flange_serial_close.hpp"
 #include "dsr_msgs2/srv/flange_serial_write.hpp"
+#include "dsr_msgs2/srv/flange_serial_read.hpp"
 
 #include "e0509_gripper_description/modbus_rtu.hpp"
 
@@ -48,6 +49,7 @@ public:
         cli_open_ = worker_node_->create_client<dsr_msgs2::srv::FlangeSerialOpen>(prefix + "/flange_serial_open");
         cli_close_ = worker_node_->create_client<dsr_msgs2::srv::FlangeSerialClose>(prefix + "/flange_serial_close");
         cli_write_ = worker_node_->create_client<dsr_msgs2::srv::FlangeSerialWrite>(prefix + "/flange_serial_write");
+        cli_read_ = worker_node_->create_client<dsr_msgs2::srv::FlangeSerialRead>(prefix + "/flange_serial_read");
 
         RCLCPP_INFO(logger_, "Waiting for Doosan flange serial services...");
 
@@ -55,7 +57,8 @@ public:
         for (const auto& [cli, name] : std::vector<std::pair<rclcpp::ClientBase::SharedPtr, std::string>>{
                 {cli_open_, "flange_serial_open"},
                 {cli_close_, "flange_serial_close"},
-                {cli_write_, "flange_serial_write"}}) {
+                {cli_write_, "flange_serial_write"},
+                {cli_read_, "flange_serial_read"}}) {
             if (!cli->wait_for_service(10s)) {
                 RCLCPP_ERROR(logger_, "Service %s connection failed!", name.c_str());
                 all_ready = false;
@@ -179,6 +182,71 @@ private:
         return serial_write(modbus_rtu::fc06_torque_enable());
     }
 
+public:
+    std::vector<uint8_t> serial_read(float timeout_sec = 1.0) {
+        auto req = std::make_shared<dsr_msgs2::srv::FlangeSerialRead::Request>();
+        req->port = port_;
+        req->timeout = timeout_sec;
+
+        auto future = cli_read_->async_send_request(req);
+        if (rclcpp::spin_until_future_complete(worker_node_, future, 10s) ==
+            rclcpp::FutureReturnCode::SUCCESS)
+        {
+            auto result = future.get();
+            if (result && result->success && result->size > 0) {
+                RCLCPP_INFO(logger_, "Read success (%d bytes)", result->size);
+                return std::vector<uint8_t>(result->data.begin(), result->data.end());
+            }
+        }
+        RCLCPP_WARN(logger_, "Read failed or empty");
+        return {};
+    }
+
+    int read_present_position() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!real_mode_) return -1;
+
+        if (!serial_open()) return -1;
+
+        std::this_thread::sleep_for(200ms);
+
+        // Send FC03 read request
+        auto frame = modbus_rtu::fc03_read_present_position();
+        if (!serial_write(frame)) {
+            serial_close();
+            return -1;
+        }
+
+        // Wait for gripper to process and respond
+        std::this_thread::sleep_for(500ms);
+
+        // Read response with longer timeout
+        auto response = serial_read(3.0);
+        serial_close();
+
+        if (response.empty()) {
+            RCLCPP_WARN(logger_, "No response from gripper for position read");
+            return -1;
+        }
+
+        // Log raw response for debugging
+        std::string hex_str;
+        for (auto b : response) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", b);
+            hex_str += buf;
+        }
+        RCLCPP_INFO(logger_, "Gripper response (%zu bytes): %s", response.size(), hex_str.c_str());
+
+        int position = modbus_rtu::parse_present_position(response);
+        if (position >= 0) {
+            RCLCPP_INFO(logger_, "Present position: %d", position);
+        } else {
+            RCLCPP_WARN(logger_, "Failed to parse position from response");
+        }
+        return position;
+    }
+
     std::string namespace_;
     int port_;
     bool real_mode_;
@@ -188,6 +256,7 @@ private:
     rclcpp::Client<dsr_msgs2::srv::FlangeSerialOpen>::SharedPtr cli_open_;
     rclcpp::Client<dsr_msgs2::srv::FlangeSerialClose>::SharedPtr cli_close_;
     rclcpp::Client<dsr_msgs2::srv::FlangeSerialWrite>::SharedPtr cli_write_;
+    rclcpp::Client<dsr_msgs2::srv::FlangeSerialRead>::SharedPtr cli_read_;
 };
 
 
@@ -231,6 +300,16 @@ public:
 
     void init_worker() {
         worker_->init_clients();
+
+        // Initialize gripper to open position on startup
+        RCLCPP_INFO(this->get_logger(), "Initializing gripper to open position...");
+        auto [success, message] = worker_->execute_command(0);
+        if (success) {
+            RCLCPP_INFO(this->get_logger(), "Gripper initialized to open position");
+            publish_stroke(0);
+        } else {
+            RCLCPP_WARN(this->get_logger(), "Gripper init failed: %s, defaulting to 0 (open)", message.c_str());
+        }
     }
 
     ~GripperServiceNode() override {

@@ -96,7 +96,7 @@ def generate_launch_description():
     # Gripper Joint State Publisher
     gripper_joint_pub_node = Node(
         package='e0509_gripper_description',
-        executable='gripper_joint_publisher.py',
+        executable='gripper_joint_publisher',
         name='gripper_joint_publisher',
         namespace=LaunchConfiguration('name'),
         output='screen',
@@ -105,7 +105,7 @@ def generate_launch_description():
     # Gripper Service Node (ROS2 서비스로 그리퍼 제어)
     gripper_service_node = Node(
         package='e0509_gripper_description',
-        executable='gripper_service_node.py',
+        executable='gripper_service_node',
         name='gripper_service_node',
         namespace=LaunchConfiguration('name'),
         parameters=[{'mode': LaunchConfiguration('mode')}],

@@ -363,158 +363,96 @@ ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --on
 
 ---
 
-## cuRobo 모션 플래닝 (비전 기반 로봇 제어)
+## cuRobo 비전 기반 로봇 제어
 
-cuRobo (NVIDIA GPU 가속 모션 플래너)를 사용하여 RealSense 카메라로 물체를 인식하고, 충돌 회피 경로를 생성하여 로봇을 제어합니다.
+cuRobo (NVIDIA GPU 가속 모션 플래너) + Grounding DINO (제로샷 물체 인식) + RealSense depth로
+물체를 인식하고 충돌 회피 경로를 생성하여 자동으로 물체를 잡습니다.
 
 ### 시스템 구성
 ```
-[RealSense D455F] → 물체 인식 (ArUco/YOLO)
+[RealSense D455F] → Grounding DINO (제로샷 물체 인식)
+        ↓                    ↓
+[depth 기반 3D 좌표]   [3D PCA → 물체 방향]
+        ↓                    ↓
+[캘리브레이션 변환] → 로봇 좌표 + 그리퍼 각도
         ↓
-[캘리브레이션 변환] → 카메라 좌표 → 로봇 좌표
+[cuRobo Planner] → GPU 가속 충돌 회피 경로 (~70ms)
         ↓
-[cuRobo Planner] → GPU 가속 경로 생성 (~80ms)
-        ↓
-[Doosan E0509] → 로봇 이동 (MoveJoint)
+[Doosan E0509] → 이동 + Pick (접근→열기→하강→잡기→들기)
 ```
 
 ### 사전 준비
 
-1. **CUDA Toolkit 12.8 설치**
+1. **CUDA Toolkit 12.8 + cuRobo 설치**
 ```bash
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt update
 sudo apt install cuda-toolkit-12-8
+cd ~ && git clone https://github.com/NVlabs/curobo.git && cd curobo
+pip install ninja && export CUDA_HOME=/usr/local/cuda-12.8 && pip install -e ".[dev]"
 ```
 
-2. **cuRobo 설치**
+2. **Grounding DINO 설치**
 ```bash
-cd ~
-git clone https://github.com/NVlabs/curobo.git
-cd curobo
-pip install ninja
-export CUDA_HOME=/usr/local/cuda-12.8
-pip install -e ".[dev]"
+pip install groundingdino-py
+pip install transformers==4.40.2  # 호환성
 ```
 
-3. **캘리브레이션 완료** (아래 Eye-to-Hand Calibration 섹션 참조)
+3. **모델 다운로드**
+```bash
+mkdir -p ~/models && cd ~/models
+wget -O groundingdino_swint_ogc.pth "https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth"
+```
+
+4. **캘리브레이션 완료** (아래 Eye-to-Hand Calibration 섹션 참조)
 
 ### 실행 방법
 
-총 **3개 터미널**이 필요합니다.
-
 **터미널 1: 로봇 Bringup**
 ```bash
-source /opt/ros/humble/setup.bash && source ~/doosan_ws/install/setup.bash
 ros2 launch e0509_gripper_description bringup.launch.py \
     mode:=real host:=<로봇IP> rt_host:=<로봇IP>
 ```
-> 정상 연결 시 `Connected to DRCF`, `INITIAL STATE_STANDBY`, `Connected RT control stream` 확인
 
-**터미널 2: cuRobo Planner 노드**
+**터미널 2: cuRobo + 물체 인식 (한 번에 실행)**
 ```bash
-source /opt/ros/humble/setup.bash && source ~/doosan_ws/install/setup.bash
-export CUDA_HOME=/usr/local/cuda-12.8
-python3 ~/doosan_ws/src/e0509_gripper_description/scripts/curobo_planner_node.py
+ros2 launch e0509_gripper_description curobo_vision.launch.py
 ```
-> JIT 컴파일 후 `cuRobo Planner Ready!` 확인 (첫 실행 시 1~2분 소요)
+> cuRobo planner가 먼저 로딩되고 (JIT 컴파일 ~30초), 이후 Grounding DINO가 시작됩니다.
 
-**터미널 3: 비전 인식 + 로봇 이동 (마커 기반)**
+**프롬프트 변경:**
 ```bash
-source /opt/ros/humble/setup.bash && source ~/doosan_ws/install/setup.bash
-cd ~/sim2real/sim2real
-PYTHONPATH=~/sim2real/sim2real:$PYTHONPATH python3 << 'EOF'
-import numpy as np, cv2, pyrealsense2 as rs, rclpy, time
-from cv2 import aruco
-from geometry_msgs.msg import PoseStamped
-
-# 캘리브레이션 로드
-calib = np.load("config/calibration_eye_to_hand.npz")
-T = calib['T_cam_to_base']; R, t = T[:3,:3], T[:3,3]
-
-# RealSense (color + depth)
-pipeline = rs.pipeline(); config = rs.config()
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-pipeline.start(config)
-align = rs.align(rs.stream.color)
-
-# ArUco 감지기
-det = aruco.ArucoDetector(aruco.getPredefinedDictionary(aruco.DICT_6X6_50), aruco.DetectorParameters())
-
-# ROS2 publisher
-rclpy.init(); node = rclpy.create_node("marker_to_curobo")
-pub = node.create_publisher(PoseStamped, "/dsr01/curobo/target_pose", 10); time.sleep(1)
-
-print("='s' = 마커 위치로 로봇 이동, 'q' = 종료")
-
-ee_quat = [0.7071, 0.7071, 0.0, 0.0]  # 그리퍼 아래 방향
-last_pos = None
-
-while True:
-    frames = pipeline.wait_for_frames()
-    aligned = align.process(frames)
-    cf = aligned.get_color_frame(); df = aligned.get_depth_frame()
-    if not cf: continue
-
-    img = np.asanyarray(cf.get_data()); display = img.copy()
-    corners, ids, _ = det.detectMarkers(img)
-
-    if ids is not None and 0 in ids.flatten():
-        idx = list(ids.flatten()).index(0)
-        aruco.drawDetectedMarkers(display, corners, ids)
-        center = corners[idx][0].mean(axis=0)
-
-        # Depth 기반 3D 좌표
-        depth_m = df.get_distance(int(center[0]), int(center[1]))
-        if depth_m > 0.1:
-            intr = df.profile.as_video_stream_profile().intrinsics
-            pt3d = rs.rs2_deproject_pixel_to_point(intr, [center[0], center[1]], depth_m)
-            tc = np.array(pt3d)
-            pb = R @ tc + t; last_pos = pb
-            cv2.putText(display, f"X:{pb[0]*1000:.1f} Y:{pb[1]*1000:.1f} Z:{pb[2]*1000:.1f}",
-                       (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
-
-    cv2.imshow("Marker to cuRobo", display)
-    k = cv2.waitKey(1) & 0xFF
-    if k == ord('s') and last_pos is not None:
-        tz = max(last_pos[2] + 0.15, 0.15)  # 마커 위 15cm (안전 높이)
-        m = PoseStamped(); m.header.frame_id = "base_link"
-        m.pose.position.x = float(last_pos[0])
-        m.pose.position.y = float(last_pos[1])
-        m.pose.position.z = float(tz)
-        m.pose.orientation.x = float(ee_quat[0])
-        m.pose.orientation.y = float(ee_quat[1])
-        m.pose.orientation.z = float(ee_quat[2])
-        m.pose.orientation.w = float(ee_quat[3])
-        pub.publish(m)
-        print(f"Sent: X={last_pos[0]*1000:.1f} Y={last_pos[1]*1000:.1f} Z={tz*1000:.1f}")
-    elif k == ord('q'): break
-
-pipeline.stop(); cv2.destroyAllWindows(); node.destroy_node(); rclpy.shutdown()
-EOF
+ros2 launch e0509_gripper_description curobo_vision.launch.py \
+    prompt:="cup . bottle . pen"
 ```
 
 ### 조작법
 | 키 | 동작 |
 |----|------|
-| `s` | 현재 마커 위치로 로봇 이동 (마커 위 15cm 안전 높이) |
+| `1-9` | 감지된 물체 선택 + 잠금 (감지 멈춤, 주변 물체를 cuRobo 장애물로 등록) |
+| `r` | 잠금 해제 (감지 재개) |
+| `s` | 선택된 물체 위 15cm로 이동 (cuRobo 충돌 회피) |
+| `p` | Pick 시퀀스: 그리퍼 열기 → 하강 (cuRobo) → 잡기 → 들기 |
+| `w/x` | 그리퍼 각도 미세 조정 (±5°) |
 | `q` | 종료 |
 
-### 수동 목표 지정 (마커 없이)
-```bash
-# target_pose 토픽으로 직접 목표 전송 (단위: 미터, 쿼터니언)
-ros2 topic pub --once /dsr01/curobo/target_pose geometry_msgs/msg/PoseStamped \
-  "{header: {frame_id: 'base_link'}, pose: {
-    position: {x: 0.35, y: 0.15, z: 0.4},
-    orientation: {x: 0.7071, y: 0.7071, z: 0.0, w: 0.0}}}"
+### Pick 시퀀스 상세
 ```
+'s' → cuRobo 접근 (물체 위 15cm, 주변 장애물 회피, 물체 방향에 맞게 그리퍼 회전)
+'p' →
+  1. 그리퍼 열기
+  2. cuRobo 하강 (물체 위 12cm, 장애물 회피)
+  3. 그리퍼 닫기
+  4. movel 직선 위로 들기 (15cm)
+```
+
+### 물체 방향 자동 감지
+- RealSense depth point cloud에서 **3D PCA**로 물체 장축 방향을 계산
+- 장축에 **수직으로 그리퍼를 자동 회전**하여 잡기 자세 결정
+- 카메라 각도와 무관하게 **로봇 XY 평면에서의 실제 물체 방향** 사용
 
 ### 주의사항
 - 재시작 시 이전 세션 종료 후 **10초 대기** 필요 (RT 포트 해제 대기)
-- cuRobo planner의 장애물은 현재 테이블만 하드코딩 (추후 depth 기반 동적 장애물 추가 예정)
-- 그리퍼 방향 쿼터니언: `x=0.7071, y=0.7071, z=0, w=0` = 아래 방향
+- 감지된 물체 중 **잠금한 물체를 제외한 나머지**가 cuRobo 장애물로 등록됨
+- GPU 메모리 약 4GB 필요 (cuRobo ~2GB + Grounding DINO ~2GB)
 
 ---
 

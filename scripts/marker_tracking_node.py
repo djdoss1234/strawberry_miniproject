@@ -82,8 +82,9 @@ class MarkerTrackingNode(Node):
             aruco.getPredefinedDictionary(aruco.DICT_6X6_50),
             aruco.DetectorParameters())
 
-        # Publisher
+        # Publishers
         self.pub = self.create_publisher(PoseStamped, target_topic, 10)
+        self.pick_pub = self.create_publisher(PoseStamped, "/dsr01/curobo/pick_pose", 10)
 
         # EE orientation (gripper pointing down)
         self.ee_quat = [0.7071, 0.7071, 0.0, 0.0]
@@ -100,7 +101,7 @@ class MarkerTrackingNode(Node):
         self.get_logger().info(f"  Safe Z offset: {self.safe_z_offset}m")
         self.get_logger().info(f"  Target topic: {target_topic}")
         self.get_logger().info(f"  Auto send: {self.auto_send}")
-        self.get_logger().info("  Keys: 's' = send, 'q' = quit")
+        self.get_logger().info("  Keys: 's' = move, 'p' = pick, 'q' = quit")
         self.get_logger().info("=" * 50)
 
     def camera_loop(self):
@@ -145,7 +146,7 @@ class MarkerTrackingNode(Node):
                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 cv2.putText(display, f"dist: {depth_m*100:.1f}cm",
                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                cv2.putText(display, "'s' to send",
+                cv2.putText(display, "'s'=move  'p'=pick  'q'=quit",
                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
                 if self.auto_send:
@@ -162,6 +163,8 @@ class MarkerTrackingNode(Node):
 
         if k == ord('s') and self.last_pos is not None:
             self.send_target()
+        elif k == ord('p') and self.last_pos is not None:
+            self.send_pick()
         elif k == ord('q'):
             self.get_logger().info("Shutting down...")
             raise SystemExit
@@ -186,6 +189,26 @@ class MarkerTrackingNode(Node):
 
         self.get_logger().info(
             f"Sent: X={self.last_pos[0]*1000:.1f} Y={self.last_pos[1]*1000:.1f} Z={target_z*1000:.1f}")
+
+    def send_pick(self):
+        """Send pick command (approach → open → descend → close → lift)."""
+        if self.last_pos is None:
+            return
+
+        msg = PoseStamped()
+        msg.header.frame_id = "base_link"
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.position.x = float(self.last_pos[0])
+        msg.pose.position.y = float(self.last_pos[1])
+        msg.pose.position.z = float(self.last_pos[2])  # actual object Z
+        msg.pose.orientation.x = float(self.ee_quat[0])
+        msg.pose.orientation.y = float(self.ee_quat[1])
+        msg.pose.orientation.z = float(self.ee_quat[2])
+        msg.pose.orientation.w = float(self.ee_quat[3])
+        self.pick_pub.publish(msg)
+
+        self.get_logger().info(
+            f"PICK: X={self.last_pos[0]*1000:.1f} Y={self.last_pos[1]*1000:.1f} Z={self.last_pos[2]*1000:.1f}")
 
     def destroy_node(self):
         self.pipeline.stop()

@@ -25,13 +25,16 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float64MultiArray
-from dsr_msgs2.srv import MoveSplineJoint, MoveJoint
+from std_srvs.srv import Trigger
+from dsr_msgs2.srv import MoveSplineJoint, MoveJoint, MoveLine
 
 from curobo.types.base import TensorDeviceType
 from curobo.types.robot import JointState as CuroboJointState, RobotConfig
 from curobo.types.math import Pose
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 from curobo.geom.types import WorldConfig, Cuboid
+from std_msgs.msg import String
+import json
 
 
 class CuroboPlanner(Node):
@@ -87,6 +90,7 @@ class CuroboPlanner(Node):
             tensor_args=tensor_args,
             num_trajopt_seeds=4,
             num_graph_seeds=4,
+            collision_cache={"obb": 30, "mesh": 10},
         )
         self.motion_gen = MotionGen(motion_gen_cfg)
         self.motion_gen.warmup(warmup_js_trajopt=False)
@@ -101,6 +105,19 @@ class CuroboPlanner(Node):
             PoseStamped, "/dsr01/curobo/target_pose",
             self.target_pose_cb, 10)
 
+        # Pick pose subscription
+        self.pick_sub = self.create_subscription(
+            PoseStamped, "/dsr01/curobo/pick_pose",
+            self.pick_pose_cb, 10)
+
+        # Obstacles update subscription (JSON format)
+        self.obstacles_sub = self.create_subscription(
+            String, "/dsr01/curobo/obstacles",
+            self.obstacles_cb, 10)
+
+        self.tensor_args = tensor_args
+        self.robot_cfg = robot_cfg
+
         # Doosan services (use separate callback group)
         self.cli_spline = self.create_client(
             MoveSplineJoint, "/dsr01/motion/move_spline_joint",
@@ -108,12 +125,50 @@ class CuroboPlanner(Node):
         self.cli_movej = self.create_client(
             MoveJoint, "/dsr01/motion/move_joint",
             callback_group=self.service_cb_group)
+        self.cli_movel = self.create_client(
+            MoveLine, "/dsr01/motion/move_line",
+            callback_group=self.service_cb_group)
+        self.cli_gripper_open = self.create_client(
+            Trigger, "/dsr01/gripper/open",
+            callback_group=self.service_cb_group)
+        self.cli_gripper_close = self.create_client(
+            Trigger, "/dsr01/gripper/close",
+            callback_group=self.service_cb_group)
 
         self.get_logger().info("========================================")
         self.get_logger().info("cuRobo Planner Ready!")
-        self.get_logger().info("  Subscribe: /dsr01/curobo/target_pose")
-        self.get_logger().info("  Execute via: MoveSplineJoint")
+        self.get_logger().info("  Subscribe: /dsr01/curobo/target_pose (move)")
+        self.get_logger().info("  Subscribe: /dsr01/curobo/pick_pose (pick)")
+        self.get_logger().info("  Subscribe: /dsr01/curobo/obstacles (world update)")
         self.get_logger().info("========================================")
+
+    def obstacles_cb(self, msg: String):
+        """Update cuRobo world with detected obstacles.
+        JSON format: [{"name": "obj1", "pos": [x,y,z], "dims": [w,h,d]}, ...]
+        """
+        try:
+            obstacles_data = json.loads(msg.data)
+            cuboids = [
+                Cuboid(
+                    name="table",
+                    pose=[0.0, 0.0, -0.02, 1, 0, 0, 0],
+                    dims=[1.2, 1.2, 0.04]
+                )
+            ]
+
+            for obj in obstacles_data:
+                cuboids.append(Cuboid(
+                    name=obj["name"],
+                    pose=[obj["pos"][0], obj["pos"][1], obj["pos"][2], 1, 0, 0, 0],
+                    dims=obj.get("dims", [0.05, 0.05, 0.05])
+                ))
+
+            world_cfg = WorldConfig(cuboid=cuboids)
+            self.motion_gen.update_world(world_cfg)
+            self.get_logger().info(f"World updated: {len(cuboids)} obstacles (table + {len(obstacles_data)} objects)")
+
+        except Exception as e:
+            self.get_logger().error(f"Failed to update obstacles: {e}")
 
     def joint_state_cb(self, msg: JointState):
         """Store current joint positions in correct order."""
@@ -261,6 +316,98 @@ class CuroboPlanner(Node):
             self.get_logger().error("MoveJoint timed out!")
         else:
             self.get_logger().error("MoveJoint execution failed!")
+
+    def pick_pose_cb(self, msg: PoseStamped):
+        """Pick from current position: open → descend (cuRobo) → close → lift (cuRobo)."""
+        if self.current_joints is None:
+            self.get_logger().warn("No joint state received yet")
+            return
+
+        self.get_logger().info("=== PICK: open → descend → grasp → lift ===")
+
+        pos = msg.pose.position
+        ori = msg.pose.orientation
+        GRASP_HEIGHT = 0.12     # 12cm above target
+        LIFT_HEIGHT = 0.15      # lift 15cm after grasp
+        MIN_Z = 0.02
+
+        target_z = max(pos.z, MIN_Z)
+        grasp_z = target_z + GRASP_HEIGHT
+
+        # ===== Step 1: Open gripper =====
+        self.get_logger().info("=== PICK Step 1/4: Open gripper ===")
+        self.call_trigger(self.cli_gripper_open)
+        time.sleep(1.5)
+
+        # ===== Step 2: Descend to grasp height (cuRobo, avoids obstacles) =====
+        self.get_logger().info(f"=== PICK Step 2/4: Descend to Z={grasp_z*1000:.1f}mm (cuRobo) ===")
+        traj = self.plan(
+            self.current_joints,
+            [pos.x, pos.y, grasp_z],
+            [ori.w, ori.x, ori.y, ori.z],
+        )
+        if traj is not None:
+            self.execute_movej(traj)
+            time.sleep(2.0)
+        else:
+            self.get_logger().error("Pick failed: descend planning failed")
+            return
+
+        # ===== Step 3: Close gripper =====
+        self.get_logger().info("=== PICK Step 3/4: Close gripper ===")
+        self.call_trigger(self.cli_gripper_close)
+        time.sleep(1.5)
+
+        # ===== Step 4: Lift up (movel, straight up) =====
+        self.get_logger().info("=== PICK Step 4/4: Lift ===")
+        lift_z = grasp_z + LIFT_HEIGHT
+        self.move_linear(pos.x, pos.y, lift_z, vel=50.0)
+        time.sleep(1.5)
+
+        self.get_logger().info("=== PICK COMPLETE ===")
+
+    def move_linear(self, x, y, z, vel=100.0):
+        """Move TCP linearly (movel) in mm, pointing down."""
+        if not self.cli_movel.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error("MoveLine service not available")
+            return
+
+        req = MoveLine.Request()
+        req.pos = [x * 1000, y * 1000, z * 1000, 0.0, 180.0, 0.0]  # mm, deg
+        req.vel = [vel, 30.0]
+        req.acc = [vel, 30.0]
+        req.time = 0.0
+        req.ref = 0       # base frame
+        req.mode = 0       # absolute
+        req.blend_type = 0
+        req.sync_type = 1  # async
+
+        future = self.cli_movel.call_async(req)
+        timeout = 15.0
+        start = time.time()
+        while not future.done() and (time.time() - start) < timeout:
+            time.sleep(0.1)
+
+        if future.done() and future.result() and future.result().success:
+            self.get_logger().info(f"MoveLine complete: Z={z*1000:.1f}mm")
+        else:
+            self.get_logger().error("MoveLine failed!")
+
+    def call_trigger(self, client):
+        """Call a Trigger service (gripper open/close)."""
+        if not client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error("Trigger service not available")
+            return
+
+        req = Trigger.Request()
+        future = client.call_async(req)
+        timeout = 10.0
+        start = time.time()
+        while not future.done() and (time.time() - start) < timeout:
+            time.sleep(0.1)
+
+        if future.done() and future.result():
+            self.get_logger().info(f"Trigger: {future.result().message}")
 
 
 def main():

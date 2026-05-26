@@ -27,3 +27,12 @@ Thumbs.db
 scripts/sim2real/*.npz
 scripts/sim2real/*.npy
 scripts/sim2real/calibration_images/
+
+# Local robot/camera calibration and learned weights
+config/*.npz
+config/calibration/
+models/*.pt
+*.npy
+
+# Experiment artifacts (raw camera imagery and run records)
+logs/

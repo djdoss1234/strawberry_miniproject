@@ -15,8 +15,6 @@ robot_cfg:
         "link_5",
         "link_6",
         "gripper_rh_p12_rn_base",
-        "gripper_rh_p12_rn_r1",
-        "gripper_rh_p12_rn_l1",
         "attached_object",
       ]
     collision_spheres: "e0509_spheres.yml"
@@ -30,11 +28,9 @@ robot_cfg:
         "link_2": ["link_3", "link_4"],
         "link_3": ["link_4", "link_5"],
         "link_4": ["link_5", "link_6"],
-        "link_5": ["link_6", "gripper_rh_p12_rn_base", "gripper_rh_p12_rn_r1", "gripper_rh_p12_rn_l1"],
-        "link_6": ["gripper_rh_p12_rn_base", "gripper_rh_p12_rn_r1", "gripper_rh_p12_rn_l1", "attached_object"],
-        "gripper_rh_p12_rn_base": ["gripper_rh_p12_rn_r1", "gripper_rh_p12_rn_l1", "attached_object"],
-        "gripper_rh_p12_rn_r1": ["gripper_rh_p12_rn_l1", "attached_object"],
-        "gripper_rh_p12_rn_l1": ["attached_object"],
+        "link_5": ["link_6", "gripper_rh_p12_rn_base"],
+        "link_6": ["gripper_rh_p12_rn_base", "attached_object"],
+        "gripper_rh_p12_rn_base": ["attached_object"],
       }
     self_collision_buffer:
       {
@@ -46,24 +42,16 @@ robot_cfg:
         "link_5": 0.0,
         "link_6": 0.0,
         "gripper_rh_p12_rn_base": 0.02,
-        "gripper_rh_p12_rn_r1": 0.01,
-        "gripper_rh_p12_rn_l1": 0.01,
         "attached_object": 0.0,
       }
-    lock_joints:
-      {
-        "gripper_rh_r1": 0.0,
-        "gripper_rh_r2": 0.0,
-        "gripper_rh_l1": 0.0,
-        "gripper_rh_l2": 0.0,
-      }
+    lock_joints: {}
     extra_links:
       {
         "attached_object":
           {
             "parent_link_name": "gripper_rh_p12_rn_base",
             "link_name": "attached_object",
-            "fixed_transform": [0, 0, 0.0, 1, 0, 0, 0],
+            "fixed_transform": [0, 0, 0.16, 1, 0, 0, 0],
             "joint_type": "FIXED",
             "joint_name": "attach_joint",
           },

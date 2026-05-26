@@ -54,11 +54,19 @@ install(DIRECTORY
 # Install Python scripts (keep for backwards compatibility / non-realtime scripts)
 install(PROGRAMS
   scripts/gripper.py
+  scripts/gripper_joint_publisher.py
+  scripts/gripper_service_node.py
+  scripts/gazebo_bridge.py
   scripts/digital_twin_bridge.py
   scripts/robot_slider_control.py
+  scripts/joint_jog_control.py
   scripts/curobo_planner_node.py
+  scripts/pick_place_node.py
   scripts/marker_tracking_node.py
+  scripts/strawberry_yolo_node.py
+  scripts/teach_place_slots.py
   scripts/object_tracking_node.py
+  scripts/environment_visualizer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

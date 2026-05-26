@@ -1,0 +1,64 @@
+frame_id: base_link
+
+notes:
+  - Shared environment model for RViz/MoveIt visualization and future cuRobo WorldConfig.
+  - Units are meters. Quaternion order is wxyz, same as cuRobo.
+  - Tune wall pose on the real setup before enabling it for collision planning.
+
+objects:
+  - name: table
+    type: cuboid
+    # Disabled for cuRobo planning: the current coarse robot base collision
+    # spheres intersect this z=0 table slab and make every start state invalid.
+    # Keep the real blockers (whiteboard/tray/placed fruit) active instead.
+    enabled: false
+    pose: [0.0, 0.0, -0.02, 1.0, 0.0, 0.0, 0.0]
+    dims: [1.2, 1.2, 0.04]
+    color: [0.45, 0.45, 0.45, 0.35]
+
+  - name: whiteboard_wall
+    type: cuboid
+    enabled: true
+    # TCP 실측 전면 표면 posx: [70.634, 672.029, 668.956]mm.
+    # 실제 보드 크기: 가로 1.50m, 세로 0.90m, 두께 약 0.016~0.017m.
+    # collision 모델은 소폭 여유를 둬서 두께 0.02m로 둔다.
+    # Cuboid pose는 표면이 아니라 두께 중심이다:
+    # center = measured_front_surface + WALL_UNIT * (0.02 / 2).
+    # Quaternion aligns cuboid local +Y thickness axis with measured WALL_UNIT.
+    pose: [0.070, 0.682, 0.668, 0.998962, -0.042024, -0.000738, 0.017547]
+    dims: [1.50, 0.02, 0.90]
+    color: [0.85, 0.95, 1.0, 0.32]
+
+  - name: egg_tray_body
+    type: cuboid
+    # Demo mode: disabled in cuRobo planning because the coarse held-strawberry
+    # sphere intersects the taught tray approach poses. The physical tray is
+    # still handled by taught above/release poses and RViz markers.
+    enabled: false
+    pose: [0.62, 0.11, 0.03, 1.0, 0.0, 0.0, 0.0]
+    dims: [0.28, 0.18, 0.04]
+    color: [1.0, 0.9, 0.55, 0.35]
+
+egg_tray:
+  enabled: true
+  layout: [5, 3]
+  slot_diameter: 0.05
+  slot_pitch: [0.055, 0.055]
+  slot0_center: [0.62, 0.11, 0.05]
+  color: [1.0, 0.75, 0.1, 0.7]
+
+regions:
+  enabled: false
+  image_layout: [2, 2]
+  names:
+    - top_left
+    - top_right
+    - bottom_left
+    - bottom_right
+  states:
+    - EMPTY
+    - PICKABLE
+    - UNRIPE_ONLY
+    - OCCLUDED
+    - UNCERTAIN
+    - DONE

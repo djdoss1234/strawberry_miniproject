@@ -42,7 +42,7 @@ class ObjectTrackingNode(Node):
         self.declare_parameter("prompt", "red block . green block . yellow block",
             ParameterDescriptor(description="Text prompt for object detection"))
         self.declare_parameter("calibration_path",
-            os.path.expanduser("~/sim2real/sim2real/config/calibration_eye_to_hand.npz"),
+            os.path.expanduser("~/doosan_ws/src/e0509_gripper_description/config/calibration/calibration_eye_in_hand.npz"),
             ParameterDescriptor(description="Calibration file path"))
         self.declare_parameter("box_threshold", 0.3,
             ParameterDescriptor(description="Detection confidence threshold"))

@@ -56,7 +56,7 @@ def generate_launch_description():
                     'export CUDA_HOME=/usr/local/cuda-12.8 && '
                     'source /opt/ros/humble/setup.bash && '
                     'source ~/doosan_ws/install/setup.bash && '
-                    'python3 ~/doosan_ws/src/e0509_gripper_description/scripts/object_tracking_node.py'
+                    'python3 ~/doosan_ws/src/e0509_gripper_description/scripts/strawberry_yolo_node.py'
                 ],
                 output='screen',
             )

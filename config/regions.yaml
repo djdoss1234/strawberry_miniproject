@@ -1,0 +1,68 @@
+generated_by: codex
+updated_at: '2026-05-20'
+frame_id: base_link
+
+notes:
+  - Hardware-free scaffold for whiteboard 4-region scanning.
+  - Current physical setup is four paper sheets taped on the whiteboard.
+  - Teach each region view pose later with joint_jog_control.py or DART/posx.
+  - Quadtree should start inside each region after this coarse 2x2 scan works.
+
+scan_policy:
+  mode: coarse_2x2_then_quadtree
+  first_pass_order:
+    - region0_top_left
+    - region1_top_right
+    - region2_bottom_left
+    - region3_bottom_right
+  region_done_when:
+    no_pickable_candidates: true
+    max_pick_attempts: 10
+  quadtree:
+    enabled: false
+    max_depth: 3
+    min_cell_size_px: [80, 60]
+    states:
+      - EMPTY
+      - PICKABLE
+      - UNRIPE_ONLY
+      - OCCLUDED
+      - UNCERTAIN
+      - DONE
+
+regions:
+  - id: 0
+    name: region0_top_left
+    enabled: true
+    image_roi_norm: [0.0, 0.0, 0.5, 0.5]
+    view_pose:
+      joints_deg: null
+      posx: null
+    status: UNTAUGHT
+
+  - id: 1
+    name: region1_top_right
+    enabled: true
+    image_roi_norm: [0.5, 0.0, 1.0, 0.5]
+    view_pose:
+      joints_deg: null
+      posx: null
+    status: UNTAUGHT
+
+  - id: 2
+    name: region2_bottom_left
+    enabled: true
+    image_roi_norm: [0.0, 0.5, 0.5, 1.0]
+    view_pose:
+      joints_deg: null
+      posx: null
+    status: UNTAUGHT
+
+  - id: 3
+    name: region3_bottom_right
+    enabled: true
+    image_roi_norm: [0.5, 0.5, 1.0, 1.0]
+    view_pose:
+      joints_deg: null
+      posx: null
+    status: UNTAUGHT

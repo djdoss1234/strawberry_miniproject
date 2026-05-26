@@ -1,0 +1,229 @@
+generated_by: teach_place_slots.py
+updated_at: '2026-05-21T11:59:11'
+posx_service: /dsr01/aux_control/get_current_posx
+slots:
+- name: slot0
+  enabled: true
+  occupied: false
+  above:
+    joints_deg:
+    - 7.547335980975641
+    - 41.76182564220896
+    - 58.28857482970036
+    - 1.5968981212272755
+    - 69.82195713010302
+    - -87.86804091732873
+    posx:
+    - 667.2127685546875
+    - 97.17442321777344
+    - 90.434326171875
+    - 16.005359649658203
+    - 169.75607299804688
+    - -78.99198913574219
+    - 2.0
+    ref: 0
+    captured_at: '2026-05-21T11:53:46'
+  release:
+    joints_deg:
+    - 7.547743231004903
+    - 47.27508603835155
+    - 59.78519905044438
+    - 1.5977288429850782
+    - 64.82083114811715
+    - -87.8676379361677
+    posx:
+    - 670.6194458007812
+    - 97.32049560546875
+    - 19.087238311767578
+    - 17.67048454284668
+    - 171.7457733154297
+    - -77.167724609375
+    - 2.0
+    ref: 0
+    captured_at: '2026-05-21T11:36:24'
+- name: slot1
+  enabled: true
+  occupied: false
+  above:
+    joints_deg:
+    - -0.9557153935527978
+    - 38.26058188120122
+    - 66.78815785551261
+    - 1.5969490274809333
+    - 69.82195713010302
+    - -87.86804091732873
+    posx:
+    - 621.0011596679688
+    - -1.660901427268982
+    - 69.48316192626953
+    - 15.3364839553833
+    - 174.64981079101562
+    - -71.09209442138672
+    - 2.0
+    ref: 0
+    captured_at: '2026-05-21T11:55:30'
+  release:
+    joints_deg:
+    - -1.258791164150362
+    - 43.86918488796802
+    - 66.18858335960138
+    - 1.5969150899784947
+    - 69.82192980934634
+    - -87.86805457770707
+    posx:
+    - 609.6544189453125
+    - -4.69699239730835
+    - 13.092191696166992
+    - 83.88060760498047
+    - 178.49571228027344
+    - -2.179363965988159
+    - 2.0
+    ref: 0
+    captured_at: '2026-05-21T11:56:59'
+- name: slot2
+  enabled: true
+  occupied: false
+  above:
+    joints_deg:
+    - -11.16118394818751
+    - 33.970082440841814
+    - 74.99202101101999
+    - 1.5969999337345908
+    - 69.82194346972467
+    - -87.86807506827458
+    posx:
+    - 559.20703125
+    - -101.46685791015625
+    - 60.32579803466797
+    - 39.63274383544922
+    - 178.06539916992188
+    - -36.53915786743164
+    - 2.0
+    ref: 0
+    captured_at: '2026-05-21T11:59:11'
+  release:
+    joints_deg:
+    - -11.16118394818751
+    - 39.645
+    - 72.56
+    - 1.5969999337345908
+    - 69.82192980934634
+    - -87.86807506827458
+    posx:
+    - 561.89
+    - -102.00
+    - 18.3
+    - 143.57070922851562
+    - 176.48655700683594
+    - 67.45638275146484
+    - 2.0
+    ref: 0
+    captured_at: '2026-05-21T11:58:53'
+- name: slot3
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot4
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot5
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot6
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot7
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot8
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot9
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot10
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot11
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot12
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot13
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null
+- name: slot14
+  enabled: true
+  occupied: false
+  above:
+    joints_deg: null
+    posx: null
+  release:
+    joints_deg: null
+    posx: null

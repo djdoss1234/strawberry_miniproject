@@ -623,6 +623,16 @@ class StrawberryYoloNode(Node):
                 hint = f"1~{min(n,9)}:Lock  s:Pick  x:Block  y/n/d/m:Label  a:Auto  h:Home  q:Quit" if n else "x:Block  y/n/d/m:Label  a:Auto  h:Home  q:Quit"
             cv2.putText(img, hint, (10, 460),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            # 4-cell grid overlay (NW/NE/SW/SE)
+            h, w = img.shape[:2]
+            cx, cy = w // 2, h // 2
+            cv2.line(img, (cx, 0), (cx, h), (0, 255, 0), 1)
+            cv2.line(img, (0, cy), (w, cy), (0, 255, 0), 1)
+            cv2.putText(img, "NW", (10, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(img, "NE", (cx + 10, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(img, "SW", (10, cy + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(img, "SE", (cx + 10, cy + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
             self._last_vis_img = img.copy()
             cv2.imshow("Strawberry Detection", img)
             key = cv2.waitKey(1) & 0xFF

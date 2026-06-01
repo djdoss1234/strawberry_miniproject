@@ -301,6 +301,7 @@ class CuroboPlanner(Node):
         self.create_subscription(Int32, "/dsr01/gripper/stroke", self._stroke_cb, 10)
 
         self.pick_complete_pub = self.create_publisher(Empty, "/dsr01/curobo/pick_complete", 10)
+        self.vla_request_pub = self.create_publisher(PoseStamped, "/strawberry/vla/request", 10)
         self.gripper_pos_pub = self.create_publisher(Int32, "/dsr01/gripper/position_cmd", 10)
 
         self.cli_spline = self.create_client(
@@ -891,9 +892,10 @@ class CuroboPlanner(Node):
             retreat_joints = grasp_joints
 
         if not grasp_ok:
-            self.get_logger().warn("파지 실패 — abort")
+            self.get_logger().warn("파지 실패 — VLA 이관 후 abort")
             self.set_held_strawberry_collision(False)
             self.call_trigger(self.cli_gripper_open)
+            self.vla_request_pub.publish(msg)
             self.plan_to_fixed_joints_pose(retreat_joints, HOME_JOINTS_DEG, "home after grasp check fail")
             self.pick_complete_pub.publish(Empty())
             return

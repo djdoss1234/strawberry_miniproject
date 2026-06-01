@@ -26,7 +26,7 @@ from curobo.types.base import TensorDeviceType
 from curobo.types.robot import JointState as CuroboJointState, RobotConfig
 from curobo.types.math import Pose
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
-from curobo.geom.types import WorldConfig, Cuboid
+from curobo.geom.types import WorldConfig, Cuboid, Sphere
 
 
 # ── 딸기 접근 파라미터 ────────────────────────────────────────────────────────
@@ -35,6 +35,8 @@ STAGING_EXTRA    = 0.15    # staging 추가 거리: approach보다 15cm 더 뒤
 GRASP_OFFSET     = -0.050   # TCP를 딸기 중심보다 벽 방향으로 5cm 더 밀어 넣음
 GRASP_RETRY_OFFSETS = [-0.05, -0.04, -0.03, 0.0]  # demo: 깊게 먼저 잡고 실패 시 얕게 재시도
 RETREAT_OFFSET   = 0.36    # demo: 딸기/벽에서 더 빠져 place 이동 중 스침을 줄임
+RETREAT_UP_M     = 0.05    # retreat 시 위쪽 5cm 추가 — 이웃 딸기 스침 방지
+NEIGHBOR_SPHERE_RADIUS_M = 0.030  # 이웃 딸기 장애물 sphere 반지름 (30mm)
 PRE_BIN_CLEAR_OFFSET = 0.42 # place 이동 전 벽에서 충분히 빠지는 clear 지점
 PRE_BIN_CLEAR_RETRY_OFFSETS = [0.42, 0.36, 0.30]
 GRASP_Z_BIAS     = -0.025  # 검출 중심보다 30mm 낮게 파지
@@ -259,6 +261,8 @@ class CuroboPlanner(Node):
         self.static_cuboids = load_environment_cuboids()
         self.dynamic_cuboids = []
         self.placed_cuboids = []
+        self.neighbor_spheres: list = []   # 현재 씬 이웃 딸기 장애물 (pick마다 갱신)
+        self._scene_positions: list = []   # /strawberry/detection/scene_positions 수신값
 
         # ── cuRobo 초기화 ─────────────────────────────────────────────────────
         config_dir = os.path.join(
@@ -283,7 +287,7 @@ class CuroboPlanner(Node):
         motion_gen_cfg = MotionGenConfig.load_from_robot_config(
             robot_cfg, world_cfg, tensor_args=tensor_args,
             num_trajopt_seeds=16, num_graph_seeds=16,
-            collision_cache={"obb": 30, "mesh": 10},
+            collision_cache={"obb": 30, "mesh": 10, "sphere": 30},
             use_cuda_graph=False,
             self_collision_check=USE_CUROBO_SELF_COLLISION,
             self_collision_opt=USE_CUROBO_SELF_COLLISION,
@@ -299,6 +303,9 @@ class CuroboPlanner(Node):
         self.create_subscription(PoseStamped, "/dsr01/curobo/pick_pose", self.pick_pose_cb, 10)
         self.create_subscription(String, "/dsr01/curobo/obstacles", self.obstacles_cb, 10)
         self.create_subscription(Int32, "/dsr01/gripper/stroke", self._stroke_cb, 10)
+        self.create_subscription(
+            Float64MultiArray, "/strawberry/detection/scene_positions", self._scene_cb, 10
+        )
 
         self.pick_complete_pub = self.create_publisher(Empty, "/dsr01/curobo/pick_complete", 10)
         self.vla_request_pub = self.create_publisher(PoseStamped, "/strawberry/vla/request", 10)
@@ -367,10 +374,40 @@ class CuroboPlanner(Node):
 
     def update_curobo_world(self, reason="manual"):
         cuboids = self.static_cuboids + self.dynamic_cuboids + self.placed_cuboids
-        self.motion_gen.update_world(WorldConfig(cuboid=cuboids))
+        self.motion_gen.update_world(WorldConfig(cuboid=cuboids, sphere=self.neighbor_spheres))
         self.get_logger().info(
             f"World updated ({reason}): static={len(self.static_cuboids)} "
-            f"dynamic={len(self.dynamic_cuboids)} placed={len(self.placed_cuboids)}")
+            f"dynamic={len(self.dynamic_cuboids)} placed={len(self.placed_cuboids)} "
+            f"neighbor_spheres={len(self.neighbor_spheres)}")
+
+    def _scene_cb(self, msg: Float64MultiArray) -> None:
+        """Receive all detected berry positions as flat [x,y,z, x,y,z, ...] array."""
+        data = msg.data
+        positions = []
+        for i in range(0, len(data) - 2, 3):
+            positions.append(np.array([data[i], data[i + 1], data[i + 2]]))
+        self._scene_positions = positions
+
+    def _register_neighbor_obstacles(self, target_pos: np.ndarray) -> None:
+        """Register all scene positions except the target as sphere obstacles."""
+        spheres = []
+        for i, pos in enumerate(self._scene_positions):
+            if np.linalg.norm(pos - target_pos) < 0.035:
+                continue  # skip target itself
+            spheres.append(Sphere(
+                name=f"neighbor_{i}",
+                pose=[float(pos[0]), float(pos[1]), float(pos[2]), 1.0, 0.0, 0.0, 0.0],
+                radius=NEIGHBOR_SPHERE_RADIUS_M,
+            ))
+        self.neighbor_spheres = spheres
+        self.update_curobo_world("neighbor obstacles registered")
+        self.get_logger().info(f"Registered {len(spheres)} neighbor sphere obstacle(s)")
+
+    def _clear_neighbor_obstacles(self) -> None:
+        """Remove neighbor spheres from cuRobo world after pick."""
+        if self.neighbor_spheres:
+            self.neighbor_spheres = []
+            self.update_curobo_world("neighbor obstacles cleared")
 
     def _check_state_feasible_with_world(self, joints, cuboids):
         try:
@@ -775,7 +812,9 @@ class CuroboPlanner(Node):
             (offset, straw - (offset + GRIPPER_LEN) * WALL_UNIT)
             for offset in grasp_retry_offsets
         ]
-        ee_r = straw - (RETREAT_OFFSET  + GRIPPER_LEN) * WALL_UNIT
+        # Retreat: pull back + slight upward to avoid sweeping through neighbors
+        ee_r = (straw - (RETREAT_OFFSET + GRIPPER_LEN) * WALL_UNIT
+                + np.array([0.0, 0.0, RETREAT_UP_M]))
         ee_clear_candidates = [
             (offset, straw - (offset + GRIPPER_LEN) * WALL_UNIT)
             for offset in PRE_BIN_CLEAR_RETRY_OFFSETS
@@ -784,6 +823,9 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"=== PICK 딸기 raw=({raw_straw[0]*1000:.0f},{raw_straw[1]*1000:.0f},{raw_straw[2]*1000:.0f})mm "
             f"grasp=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm ===")
+
+        # 0. 이웃 딸기 장애물 등록 (씬 위치 수신된 경우)
+        self._register_neighbor_obstacles(straw)
 
         # 1. 그리퍼 열기
         self.get_logger().info("1 open gripper")
@@ -869,6 +911,7 @@ class CuroboPlanner(Node):
                 self.execute_spline(*ret2)
                 approach_joints = ret2[0][-1].tolist()
             self.plan_to_fixed_joints_pose(approach_joints, HOME_JOINTS_DEG, "home after grasp fail")
+            self._clear_neighbor_obstacles()
             self.pick_complete_pub.publish(Empty())
             return
 
@@ -897,6 +940,7 @@ class CuroboPlanner(Node):
             self.call_trigger(self.cli_gripper_open)
             self.vla_request_pub.publish(msg)
             self.plan_to_fixed_joints_pose(retreat_joints, HOME_JOINTS_DEG, "home after grasp check fail")
+            self._clear_neighbor_obstacles()
             self.pick_complete_pub.publish(Empty())
             return
         self.set_held_strawberry_collision(True)
@@ -989,7 +1033,8 @@ class CuroboPlanner(Node):
         if not ok:
             self.get_logger().error("Home move failed after deposit")
 
-        # 10. 완료 신호
+        # 10. 이웃 장애물 해제 + 완료 신호
+        self._clear_neighbor_obstacles()
         self.pick_complete_pub.publish(Empty())
         self.get_logger().info("=== PICK COMPLETE ===")
 

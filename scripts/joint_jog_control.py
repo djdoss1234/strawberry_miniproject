@@ -26,8 +26,8 @@ from dsr_msgs2.srv import GetRobotMode, GetRobotState, MoveJoint
 
 
 JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
-DEFAULT_VEL = 10.0
-DEFAULT_ACC = 10.0
+DEFAULT_VEL = 80.0
+DEFAULT_ACC = 120.0
 DEFAULT_STEP_DEG = 1.0
 MIN_STEP_DEG = 0.1
 MAX_STEP_DEG = 10.0
@@ -143,7 +143,7 @@ class JointJogControl(Node):
         self.last_cmd_time = time.time()
         if not wait:
             return True
-        timeout_end = time.time() + 5.0
+        timeout_end = time.time() + 90.0
         while not future.done() and time.time() < timeout_end:
             rclpy.spin_once(self, timeout_sec=0.02)
         if not future.done():

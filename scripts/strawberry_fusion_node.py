@@ -15,6 +15,7 @@ Published topics:
 
 import os
 import threading
+import time
 import numpy as np
 import cv2
 import rclpy
@@ -111,6 +112,10 @@ class StrawberryFusionNode(Node):
         self.declare_parameter("yolo_conf",    0.25)
         self.declare_parameter("kp_conf_min",  0.40)   # keypoint visibility threshold
         self.declare_parameter("infer_every",  3)       # run inference every N camera frames
+        self.declare_parameter("stable_hits_required", 2)
+        self.declare_parameter("track_match_distance_m", 0.050)
+        self.declare_parameter("track_ttl_sec", 1.0)
+        self.declare_parameter("publish_period_sec", 0.7)
         self.declare_parameter("show_display", True)
 
         seg_path   = os.path.expanduser(self.get_parameter("seg_model").value)
@@ -119,6 +124,10 @@ class StrawberryFusionNode(Node):
         self._conf    = self.get_parameter("yolo_conf").value
         self._kp_min  = self.get_parameter("kp_conf_min").value
         self._infer_n = max(1, self.get_parameter("infer_every").value)
+        self._stable_hits = max(1, int(self.get_parameter("stable_hits_required").value))
+        self._track_match_dist = float(self.get_parameter("track_match_distance_m").value)
+        self._track_ttl_sec = float(self.get_parameter("track_ttl_sec").value)
+        self._publish_period_sec = float(self.get_parameter("publish_period_sec").value)
         self._display = self.get_parameter("show_display").value
 
         # ── calibration ───────────────────────────────────────────────────────
@@ -159,9 +168,57 @@ class StrawberryFusionNode(Node):
             Float64MultiArray, "/strawberry/detection/scene_positions", 10)
 
         self._frame_n = 0
+        self._tracks = {}
+        self._next_track_id = 1
         self.timer = self.create_timer(1.0 / 30.0, self._loop)
         self.get_logger().info(
             "StrawberryFusionNode ready.  q=quit in display window")
+
+    def _update_track(self, pos_base: np.ndarray, quat_xyzw: np.ndarray):
+        """Simple 3-D nearest-neighbor tracker to suppress frame flicker."""
+        now = time.monotonic()
+        stale_ids = [
+            tid for tid, track in self._tracks.items()
+            if now - track["last_seen"] > self._track_ttl_sec
+        ]
+        for tid in stale_ids:
+            del self._tracks[tid]
+
+        best_id = None
+        best_dist = float("inf")
+        for tid, track in self._tracks.items():
+            dist = float(np.linalg.norm(pos_base - track["pos"]))
+            if dist < best_dist:
+                best_id = tid
+                best_dist = dist
+
+        if best_id is None or best_dist > self._track_match_dist:
+            best_id = self._next_track_id
+            self._next_track_id += 1
+            self._tracks[best_id] = {
+                "pos": pos_base.astype(float),
+                "quat": quat_xyzw.astype(float),
+                "hits": 0,
+                "last_seen": now,
+                "last_pub": 0.0,
+            }
+
+        track = self._tracks[best_id]
+        alpha = 0.55
+        track["pos"] = alpha * pos_base + (1.0 - alpha) * track["pos"]
+        track["quat"] = quat_xyzw.astype(float)
+        track["hits"] += 1
+        track["last_seen"] = now
+        return best_id, track
+
+    def _should_publish_track(self, track) -> bool:
+        now = time.monotonic()
+        if track["hits"] < self._stable_hits:
+            return False
+        if now - track["last_pub"] < self._publish_period_sec:
+            return False
+        track["last_pub"] = now
+        return True
 
     # ── joint callback ────────────────────────────────────────────────────────
     def _joint_cb(self, msg: JointState):
@@ -375,22 +432,26 @@ class StrawberryFusionNode(Node):
                              if stem_vec is not None
                              else np.array([0.0, 0.0, 0.0, 1.0]))
 
-                # ── publish pick pose ─────────────────────────────────────────
-                pmsg = PoseStamped()
-                pmsg.header.frame_id    = "base_link"
-                pmsg.header.stamp       = self.get_clock().now().to_msg()
-                pmsg.pose.position.x    = float(grasp_pt[0])
-                pmsg.pose.position.y    = float(grasp_pt[1])
-                pmsg.pose.position.z    = float(grasp_pt[2])
-                pmsg.pose.orientation.x = float(quat_xyzw[0])
-                pmsg.pose.orientation.y = float(quat_xyzw[1])
-                pmsg.pose.orientation.z = float(quat_xyzw[2])
-                pmsg.pose.orientation.w = float(quat_xyzw[3])
-                self.pick_pub.publish(pmsg)
+                track_id, track = self._update_track(grasp_pt, quat_xyzw)
+                stable = track["hits"] >= self._stable_hits
+                if self._should_publish_track(track):
+                    # ── publish pick pose ─────────────────────────────────────
+                    pmsg = PoseStamped()
+                    pmsg.header.frame_id    = "base_link"
+                    pmsg.header.stamp       = self.get_clock().now().to_msg()
+                    pmsg.pose.position.x    = float(track["pos"][0])
+                    pmsg.pose.position.y    = float(track["pos"][1])
+                    pmsg.pose.position.z    = float(track["pos"][2])
+                    pmsg.pose.orientation.x = float(track["quat"][0])
+                    pmsg.pose.orientation.y = float(track["quat"][1])
+                    pmsg.pose.orientation.z = float(track["quat"][2])
+                    pmsg.pose.orientation.w = float(track["quat"][3])
+                    self.pick_pub.publish(pmsg)
 
-                gx, gy, gz = grasp_pt
+                gx, gy, gz = track["pos"]
+                label = "PICK" if stable else "WAIT"
                 cv2.putText(vis,
-                    f"PICK ({gx:.3f},{gy:.3f},{gz:.3f})",
+                    f"{label}#{track_id} h={track['hits']} ({gx:.3f},{gy:.3f},{gz:.3f})",
                     (int(pose_bbox[0]), int(pose_bbox[3]) + 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, COLOR_MATCH, 1)
 

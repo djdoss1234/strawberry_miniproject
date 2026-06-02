@@ -170,6 +170,8 @@ class StrawberryFusionNode(Node):
         self._frame_n = 0
         self._tracks = {}
         self._next_track_id = 1
+        self._last_seg_items = []   # cached from last inference for smooth viz
+        self._last_pose_items = []
         self.timer = self.create_timer(1.0 / 30.0, self._loop)
         self.get_logger().info(
             "StrawberryFusionNode ready.  q=quit in display window")
@@ -296,31 +298,31 @@ class StrawberryFusionNode(Node):
                 self._show(vis)
                 return
 
-            # Throttle YOLO inference for performance
-            if self._frame_n % self._infer_n != 0:
-                self._show(vis)
-                return
+            # ── YOLO inference (throttled) — use cached results on skipped frames ──
+            run_infer = (self._frame_n % self._infer_n == 0)
+            if run_infer:
+                seg_res  = self.seg_model(img,  conf=self._conf, verbose=False)[0]
+                pose_res = self.pose_model(img, conf=self._conf, verbose=False)[0]
 
-            # ── YOLO inference ────────────────────────────────────────────────
-            seg_res  = self.seg_model(img,  conf=self._conf, verbose=False)[0]
-            pose_res = self.pose_model(img, conf=self._conf, verbose=False)[0]
+                seg_items = []
+                if seg_res.masks is not None and seg_res.boxes is not None:
+                    for i, polygon in enumerate(seg_res.masks.xy):
+                        cls_id = int(seg_res.boxes.cls[i].item())
+                        seg_items.append((cls_id, polygon))
 
-            # ── parse seg detections ──────────────────────────────────────────
-            # seg_items: list of (cls_id, polygon_np)
-            seg_items = []
-            if seg_res.masks is not None and seg_res.boxes is not None:
-                for i, polygon in enumerate(seg_res.masks.xy):
-                    cls_id = int(seg_res.boxes.cls[i].item())
-                    seg_items.append((cls_id, polygon))
+                pose_items = []
+                if pose_res.keypoints is not None and pose_res.boxes is not None:
+                    for i, kps in enumerate(pose_res.keypoints.data):
+                        bbox   = pose_res.boxes.xyxy[i].cpu().numpy()
+                        kps_np = kps.cpu().numpy()
+                        pose_items.append((bbox, kps_np))
 
-            # ── parse pose detections ─────────────────────────────────────────
-            # pose_items: list of (bbox_xyxy, kps_np(3,3))
-            pose_items = []
-            if pose_res.keypoints is not None and pose_res.boxes is not None:
-                for i, kps in enumerate(pose_res.keypoints.data):
-                    bbox   = pose_res.boxes.xyxy[i].cpu().numpy()
-                    kps_np = kps.cpu().numpy()   # (3, 3): [[x,y,conf], ...]
-                    pose_items.append((bbox, kps_np))
+                self._last_seg_items  = seg_items
+                self._last_pose_items = pose_items
+            else:
+                # Reuse last frame's detections so the overlay doesn't flicker
+                seg_items  = self._last_seg_items
+                pose_items = self._last_pose_items
 
             # ── draw seg overlays ─────────────────────────────────────────────
             cls_color = {0: COLOR_RIPE, 1: COLOR_UNRIPE, 2: COLOR_SICK}
@@ -335,17 +337,18 @@ class StrawberryFusionNode(Node):
                     cv2.polylines(vis, [polygon.astype(np.int32)],
                                   True, cls_color.get(cls_id, (200, 200, 200)), 1)
 
-            # ── scene positions: all ripe fruit centroids (for obstacle avoidance) ──
-            scene_flat = []
-            for cls_id, polygon in seg_items:
-                if cls_id == RIPE_CLASS_ID and len(polygon) >= 3:
-                    pt3d = self._polygon_centroid_3d(depth_f, intr, polygon)
-                    if pt3d is not None:
-                        scene_flat.extend([float(pt3d[0]), float(pt3d[1]), float(pt3d[2])])
-            if scene_flat:
-                smsg = Float64MultiArray()
-                smsg.data = scene_flat
-                self.scene_pub.publish(smsg)
+            # ── scene positions (only on fresh inference frames) ─────────────
+            if run_infer:
+                scene_flat = []
+                for cls_id, polygon in seg_items:
+                    if cls_id == RIPE_CLASS_ID and len(polygon) >= 3:
+                        pt3d = self._polygon_centroid_3d(depth_f, intr, polygon)
+                        if pt3d is not None:
+                            scene_flat.extend([float(pt3d[0]), float(pt3d[1]), float(pt3d[2])])
+                if scene_flat:
+                    smsg = Float64MultiArray()
+                    smsg.data = scene_flat
+                    self.scene_pub.publish(smsg)
 
             # ── fusion: match each pose detection to a seg mask ───────────────
             kp_colors = [COLOR_KP0, COLOR_KP1, COLOR_KP2]
@@ -432,9 +435,21 @@ class StrawberryFusionNode(Node):
                              if stem_vec is not None
                              else np.array([0.0, 0.0, 0.0, 1.0]))
 
-                track_id, track = self._update_track(grasp_pt, quat_xyzw)
+                if run_infer:
+                    track_id, track = self._update_track(grasp_pt, quat_xyzw)
+                else:
+                    # Visualization only — find nearest existing track without updating
+                    best_id, best_dist = None, float("inf")
+                    for tid, t in self._tracks.items():
+                        d = float(np.linalg.norm(grasp_pt - t["pos"]))
+                        if d < best_dist:
+                            best_id, best_dist = tid, d
+                    if best_id is None or best_dist > self._track_match_dist:
+                        continue
+                    track_id, track = best_id, self._tracks[best_id]
+
                 stable = track["hits"] >= self._stable_hits
-                if self._should_publish_track(track):
+                if run_infer and self._should_publish_track(track):
                     # ── publish pick pose ─────────────────────────────────────
                     pmsg = PoseStamped()
                     pmsg.header.frame_id    = "base_link"

@@ -64,6 +64,7 @@ install(PROGRAMS
   scripts/pick_place_node.py
   scripts/marker_tracking_node.py
   scripts/strawberry_yolo_node.py
+  scripts/strawberry_fusion_node.py
   scripts/teach_place_slots.py
   scripts/object_tracking_node.py
   scripts/environment_visualizer.py

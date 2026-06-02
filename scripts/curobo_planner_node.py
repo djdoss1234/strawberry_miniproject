@@ -30,17 +30,17 @@ from curobo.geom.types import WorldConfig, Cuboid, Sphere
 
 
 # ── 딸기 접근 파라미터 ────────────────────────────────────────────────────────
-APPROACH_OFFSET  = 0.15    # 딸기 앞 15cm (TCP 기준)
-STAGING_EXTRA    = 0.15    # staging 추가 거리: approach보다 15cm 더 뒤
-GRASP_OFFSET     = -0.050   # TCP를 딸기 중심보다 벽 방향으로 5cm 더 밀어 넣음
-GRASP_RETRY_OFFSETS = [-0.05, -0.04, -0.03, 0.0]  # demo: 깊게 먼저 잡고 실패 시 얕게 재시도
+APPROACH_OFFSET  = 0.18    # 딸기 앞 18cm (TCP 기준) — 15cm 파츠 장착으로 여유 확보
+STAGING_EXTRA    = 0.12    # staging 추가 거리: approach보다 12cm 더 뒤 (총 30cm)
+GRASP_OFFSET     = -0.030   # TCP를 딸기 중심보다 벽 방향으로 3cm — 파츠 길이 고려해 보수적으로
+GRASP_RETRY_OFFSETS = [-0.03, -0.02, 0.0]  # 보수적: 얕게 시도
 RETREAT_OFFSET   = 0.36    # demo: 딸기/벽에서 더 빠져 place 이동 중 스침을 줄임
 RETREAT_UP_M     = 0.05    # retreat 시 위쪽 5cm 추가 — 이웃 딸기 스침 방지
 NEIGHBOR_SPHERE_RADIUS_M = 0.030  # 이웃 딸기 장애물 sphere 반지름 (30mm)
 PRE_BIN_CLEAR_OFFSET = 0.42 # place 이동 전 벽에서 충분히 빠지는 clear 지점
 PRE_BIN_CLEAR_RETRY_OFFSETS = [0.42, 0.36, 0.30]
-GRASP_Z_BIAS     = -0.025  # 검출 중심보다 30mm 낮게 파지
-USE_STAGING      = False   # True: 30cm staging → 15cm approach → grasp
+GRASP_Z_BIAS     = 0.000   # fusion KP0(줄기 시작점) 좌표 그대로 파지
+USE_STAGING      = True    # 30cm staging → 18cm approach → grasp (15cm 파츠 보수적 접근)
 USE_PRE_BIN_CLEAR = False  # demo: retreat 후 place로 바로 이동해 불필요한 우회/딸기 접촉을 줄임
 USE_CUROBO_FIXED_POSES = True  # True: home/place 고정 joint 자세도 cuRobo joint-space로 계획
 USE_MOVEJ_FOR_DEMO_PLACE = True # demo: 계란판 위 짧은 release/home만 MoveJoint, 큰 이동은 cuRobo 유지

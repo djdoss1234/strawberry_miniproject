@@ -32,8 +32,8 @@ from curobo.geom.types import WorldConfig, Cuboid, Sphere
 # ── 딸기 접근 파라미터 ────────────────────────────────────────────────────────
 APPROACH_OFFSET  = 0.18    # 딸기 앞 18cm (TCP 기준) — 15cm 파츠 장착으로 여유 확보
 STAGING_EXTRA    = 0.12    # staging 추가 거리: approach보다 12cm 더 뒤 (총 30cm)
-GRASP_OFFSET     = -0.030   # TCP를 딸기 중심보다 벽 방향으로 3cm — 파츠 길이 고려해 보수적으로
-GRASP_RETRY_OFFSETS = [-0.03, -0.02, 0.0]  # 보수적: 얕게 시도
+GRASP_OFFSET     = +0.050   # TCP를 KP0보다 5cm 앞에 세움 — 15.8cm extension이 벽(672mm)에서 26mm 여유
+GRASP_RETRY_OFFSETS = [0.050, 0.065, 0.035]  # 5cm / 6.5cm / 3.5cm 앞 (모두 양수 = 벽 밖)
 RETREAT_OFFSET   = 0.36    # demo: 딸기/벽에서 더 빠져 place 이동 중 스침을 줄임
 RETREAT_UP_M     = 0.05    # retreat 시 위쪽 5cm 추가 — 이웃 딸기 스침 방지
 NEIGHBOR_SPHERE_RADIUS_M = 0.030  # 이웃 딸기 장애물 sphere 반지름 (30mm)

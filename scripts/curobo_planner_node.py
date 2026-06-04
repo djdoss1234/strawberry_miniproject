@@ -76,7 +76,11 @@ WRAP_EQUIVALENT_JOINT_IDX = {0, 3, 5}  # J1/J4/J6: same physical angle every 360
 
 GRIPPER_LEN      = 0.160   # ee_link → TCP 거리 (m)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
-WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]  # ee_link [w,x,y,z] (2026-05-18)
+# ee_link [w,x,y,z].  Updated from the 2026-06-01 gripper-centered scan poses
+# (rx≈88°, ry≈86°, rz≈-89°).  The previous 2026-05-18 wall-facing quaternion
+# no longer matched the retaught gripper-centered harvest posture and produced
+# IK_FAIL for SW stem targets.
+WALL_QUAT_WXYZ   = [0.039784, 0.706190, -0.005743, -0.706881]
 GRASP_QUAT_RETRY_DEG = [0.0, -8.0, 8.0, -15.0, 15.0]  # small wrist pitch search for close SW reachability
 CARTESIAN_PLAN_MAX_ATTEMPTS = 2  # unreachable grasp target should not stall for 10s x retries
 CARTESIAN_PLAN_TIMEOUT_SEC = 1.2

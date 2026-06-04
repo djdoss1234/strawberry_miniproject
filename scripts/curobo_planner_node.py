@@ -72,6 +72,7 @@ OPERATIONAL_JOINT_LIMITS_DEG = [
     (-130.0, 130.0),
     (-225.0, 225.0),   # J6: wrist wrap은 180도 근처까지 허용
 ]
+WRAP_EQUIVALENT_JOINT_IDX = {0, 3, 5}  # J1/J4/J6: same physical angle every 360 deg
 
 GRIPPER_LEN      = 0.160   # ee_link → TCP 거리 (m)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
@@ -536,6 +537,41 @@ class CuroboPlanner(Node):
                 return False
         return True
 
+    def normalize_trajectory_equivalents(self, traj_rad, label):
+        """Rewrite wrap-capable joints to equivalent angles inside op limits.
+
+        cuRobo may return a wrist branch such as J4=262 deg.  Physically this is
+        the same pose as -98 deg, but the operational-limit filter sees 262 deg
+        as invalid.  Normalize J1/J4/J6 before checking limits and before
+        sending the path to Doosan.
+        """
+        traj_deg = np.rad2deg(traj_rad).astype(float)
+        rewritten = []
+        for joint_idx in WRAP_EQUIVALENT_JOINT_IDX:
+            lo, hi = OPERATIONAL_JOINT_LIMITS_DEG[joint_idx]
+            original = traj_deg[:, joint_idx].copy()
+            prev = None
+            for row_idx, value in enumerate(original):
+                candidates = [value + 360.0 * k for k in range(-2, 3)]
+                valid = [c for c in candidates if lo <= c <= hi]
+                if not valid:
+                    continue
+                reference = prev if prev is not None else value
+                best = min(valid, key=lambda c: abs(c - reference))
+                traj_deg[row_idx, joint_idx] = best
+                prev = best
+            if np.max(np.abs(traj_deg[:, joint_idx] - original)) > 1e-6:
+                rewritten.append(
+                    f"J{joint_idx + 1} {float(np.min(original)):.1f}~{float(np.max(original)):.1f}"
+                    f" -> {float(np.min(traj_deg[:, joint_idx])):.1f}~{float(np.max(traj_deg[:, joint_idx])):.1f}"
+                )
+
+        if rewritten:
+            self.get_logger().info(
+                f"{label} joint equivalent rewrite: " + "; ".join(rewritten)
+            )
+        return np.deg2rad(traj_deg)
+
     def plan(self, start_joints, target_pos, target_quat_wxyz, num_ik_seeds=32):
         """CuRobo plan_single. 성공 시 (traj ndarray, motion_time_sec) 반환, 실패 시 None."""
         t0 = time.time()
@@ -556,6 +592,7 @@ class CuroboPlanner(Node):
 
         if result.success.item():
             traj = result.get_interpolated_plan().position.cpu().numpy()
+            traj = self.normalize_trajectory_equivalents(traj, "Cartesian plan")
             if not self.trajectory_in_operational_limits(traj, "Cartesian plan"):
                 return None
             motion_time = float(result.motion_time.item())
@@ -593,6 +630,7 @@ class CuroboPlanner(Node):
 
         if result.success.item():
             traj = result.get_interpolated_plan().position.cpu().numpy()
+            traj = self.normalize_trajectory_equivalents(traj, label)
             if not self.trajectory_in_operational_limits(traj, label):
                 return None
             motion_time = float(result.motion_time.item())

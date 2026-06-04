@@ -32,6 +32,17 @@ JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
 # ── Seg model class IDs ───────────────────────────────────────────────────────
 RIPE_CLASS_ID = 0   # 0=ripe, 1=unripe, 2=sick
+RIPE_RED_RATIO_MIN = 0.28
+RIPE_STRONG_RED_RATIO_MIN = 0.12
+RIPE_SAT_MEAN_MIN = 105.0
+RED_HSV_RANGES = (
+    (np.array([0, 90, 50], dtype=np.uint8), np.array([12, 255, 255], dtype=np.uint8)),
+    (np.array([168, 90, 50], dtype=np.uint8), np.array([179, 255, 255], dtype=np.uint8)),
+)
+STRONG_RED_HSV_RANGES = (
+    (np.array([0, 120, 60], dtype=np.uint8), np.array([12, 255, 255], dtype=np.uint8)),
+    (np.array([168, 120, 60], dtype=np.uint8), np.array([179, 255, 255], dtype=np.uint8)),
+)
 
 # ── Visualization ─────────────────────────────────────────────────────────────
 COLOR_RIPE   = (0, 255, 0)
@@ -91,6 +102,59 @@ def stem_vec_to_quat_xyzw(stem_vec_3d: np.ndarray) -> np.ndarray:
     axis /= axis_n
     angle = np.arccos(np.clip(np.dot(z_ref, v), -1.0, 1.0))
     return ScipyR.from_rotvec(angle * axis).as_quat()  # [x,y,z,w]
+
+
+def hsv_mask_bgr(image_bgr, ranges):
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    mask = None
+    for lower, upper in ranges:
+        part = cv2.inRange(hsv, lower, upper)
+        mask = part if mask is None else (mask | part)
+    return mask, hsv
+
+
+def ripe_metrics_in_polygon(image_bgr, polygon):
+    """Red evidence inside the segmentation mask.
+
+    Seg class can flicker close-up; require visible red pixels before allowing
+    a ripe pick target to be published.
+    """
+    h, w = image_bgr.shape[:2]
+    if len(polygon) < 3:
+        return {"red_ratio": 0.0, "strong_red_ratio": 0.0, "sat_mean": 0.0}
+
+    poly = polygon.astype(np.int32)
+    mask_poly = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask_poly, [poly], 255)
+    area = float(np.count_nonzero(mask_poly))
+    if area < 1.0:
+        return {"red_ratio": 0.0, "strong_red_ratio": 0.0, "sat_mean": 0.0}
+
+    red_mask, hsv = hsv_mask_bgr(image_bgr, RED_HSV_RANGES)
+    strong_mask, _ = hsv_mask_bgr(image_bgr, STRONG_RED_HSV_RANGES)
+
+    b, g, r = cv2.split(image_bgr)
+    dominance = ((r.astype(np.float32) > g.astype(np.float32) * 1.20) &
+                 (r.astype(np.float32) > b.astype(np.float32) * 1.20))
+    strong_mask = strong_mask & dominance.astype(np.uint8) * 255
+
+    in_poly = mask_poly > 0
+    red_in_poly = (red_mask > 0) & in_poly
+    strong_in_poly = (strong_mask > 0) & in_poly
+    sat_mean = float(np.mean(hsv[:, :, 1][red_in_poly])) if np.any(red_in_poly) else 0.0
+    return {
+        "red_ratio": float(np.count_nonzero(red_in_poly)) / area,
+        "strong_red_ratio": float(np.count_nonzero(strong_in_poly)) / area,
+        "sat_mean": sat_mean,
+    }
+
+
+def ripe_metrics_pass(metrics):
+    return (
+        metrics["red_ratio"] >= RIPE_RED_RATIO_MIN
+        and metrics["strong_red_ratio"] >= RIPE_STRONG_RED_RATIO_MIN
+        and metrics["sat_mean"] >= RIPE_SAT_MEAN_MIN
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -524,6 +588,22 @@ class StrawberryFusionNode(Node):
 
                 if matched_cls != RIPE_CLASS_ID:
                     continue  # only harvest ripe
+
+                ripe_metrics = ripe_metrics_in_polygon(img, match["polygon"])
+                if not ripe_metrics_pass(ripe_metrics):
+                    cv2.putText(
+                        vis,
+                        "skip ripe-low-red "
+                        f"R:{ripe_metrics['red_ratio']:.2f} "
+                        f"SR:{ripe_metrics['strong_red_ratio']:.2f} "
+                        f"S:{ripe_metrics['sat_mean']:.0f}",
+                        (int(pose_bbox[0]), int(pose_bbox[3]) + 24),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.36,
+                        (0, 0, 220),
+                        1,
+                    )
+                    continue
 
                 # ── compute 3D keypoint positions ─────────────────────────────
                 # KP0 = stem_base (grasp target — nearest to fruit)

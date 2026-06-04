@@ -592,9 +592,10 @@ class CuroboPlanner(Node):
                 delta_vals = np.abs(vals - start_deg[joint_idx])
             delta = float(np.max(delta_vals))
             if delta > max_delta:
+                end_deg = traj_deg[-1, joint_idx]
                 self.get_logger().warn(
-                    f"{label} rejected: J{joint_idx + 1} swing {delta:.1f}° "
-                    f"> {max_delta:.1f}° from current harvest pose")
+                    f"{label} rejected: J{joint_idx + 1} swing {delta:.1f}° > {max_delta:.1f}° "
+                    f"(start={start_deg[joint_idx]:.1f}° → end={end_deg:.1f}°)")
                 return False
         return True
 
@@ -667,16 +668,20 @@ class CuroboPlanner(Node):
             if not self.trajectory_has_reasonable_swing(traj, start_joints, "Cartesian plan"):
                 return None
             motion_time = float(result.motion_time.item())
+            end_deg = [f"{np.rad2deg(v):.1f}" for v in traj[-1]]
             self.get_logger().info(
                 f"Plan OK {dt:.0f}ms {traj.shape[0]}pts {motion_time:.2f}s | "
-                f"goal={[f'{v*1000:.0f}' for v in target_pos]}mm")
+                f"goal={[f'{v*1000:.0f}' for v in target_pos]}mm | "
+                f"end_J=[{', '.join(end_deg)}]°")
             return traj, motion_time
         else:
-            status = getattr(result, "status", "?")
+            status = str(getattr(result, "status", "UNKNOWN"))
+            start_deg = [f"{np.rad2deg(v):.1f}" for v in start_joints]
             self.get_logger().error(
                 f"Plan FAIL {dt:.0f}ms | status={status} | "
-                f"goal={[f'{v*1000:.0f}' for v in target_pos]}mm")
-            if "INVALID_START_STATE_WORLD_COLLISION" in str(status):
+                f"goal={[f'{v*1000:.0f}' for v in target_pos]}mm | "
+                f"start_J=[{', '.join(start_deg)}]°")
+            if "INVALID_START_STATE_WORLD_COLLISION" in status:
                 self.diagnose_start_world_collision(start_joints, "Cartesian plan")
             return None
 
@@ -975,7 +980,6 @@ class CuroboPlanner(Node):
         ee_a = straw - (APPROACH_OFFSET + GRIPPER_LEN) * WALL_UNIT
         ee_c = straw - (CLOSE_CONFIRM_OFFSET + GRIPPER_LEN) * WALL_UNIT
         grasp_retry_offsets = self.grasp_candidates_for_target(straw)
-        ee_g = straw - (grasp_retry_offsets[0] + GRIPPER_LEN) * WALL_UNIT
         ee_g_candidates = [
             (offset, straw - (offset + GRIPPER_LEN) * WALL_UNIT)
             for offset in grasp_retry_offsets
@@ -1075,20 +1079,23 @@ class CuroboPlanner(Node):
             step += 1
 
         # CuRobo: approach → grasp
-        self.get_logger().info(f"{step} grasp (CuRobo)")
+        n_offsets = len(ee_g_candidates)
+        n_quats   = len(GRASP_QUAT_RETRY_DEG)
+        self.get_logger().info(
+            f"{step} grasp (CuRobo) — trying {n_offsets} offsets × {n_quats} quats "
+            f"| target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
+            f"| start_J1={np.rad2deg(approach_joints[0]):.1f}°")
         ret = None
         used_grasp_offset = None
         used_grasp_quat_deg = None
+        grasp_attempt = 0
         for grasp_offset, ee_g_try in ee_g_candidates:
-            if grasp_offset != GRASP_OFFSET:
-                self.get_logger().warn(f"grasp retry offset={grasp_offset:+.3f}m")
             for quat_deg in GRASP_QUAT_RETRY_DEG:
+                grasp_attempt += 1
                 q_retry = quat_multiply_wxyz(
                     WALL_QUAT_WXYZ,
                     quat_from_axis_angle([1, 0, 0], np.deg2rad(quat_deg)),
                 )
-                if quat_deg != 0.0:
-                    self.get_logger().warn(f"grasp retry quat_x={quat_deg:+.1f}deg")
                 ret = self.plan(approach_joints, ee_g_try.tolist(), q_retry,
                                num_ik_seeds=128)
                 if ret is not None:
@@ -1100,16 +1107,20 @@ class CuroboPlanner(Node):
 
         if ret is not None:
             if not self.execute_spline(*ret):
-                self.get_logger().error("ABORT: grasp exec failed")
+                self.get_logger().error(
+                    f"ABORT: grasp spline 실행 실패 "
+                    f"(offset={used_grasp_offset:+.3f}m quat_x={used_grasp_quat_deg:+.1f}°)")
                 return
             grasp_joints = ret[0][-1].tolist()
             self.get_logger().info(
-                f"grasp offset used={used_grasp_offset:+.3f}m "
-                f"quat_x={used_grasp_quat_deg:+.1f}deg")
+                f"grasp OK — offset={used_grasp_offset:+.3f}m "
+                f"quat_x={used_grasp_quat_deg:+.1f}° "
+                f"(attempt {grasp_attempt}/{n_offsets * n_quats})")
         else:
-            self.get_logger().error("ABORT: grasp CuRobo plan failed for all candidates")
-            self.get_logger().warn(
-                "No grasp motion was executed; holding current scan pose instead of retreat/home")
+            self.get_logger().error(
+                f"ABORT: grasp 전체 실패 — {grasp_attempt}개 후보 모두 reject "
+                f"(target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
+                f"start_J=[{', '.join(f'{np.rad2deg(v):.0f}' for v in approach_joints)}]°)")
             self._clear_neighbor_obstacles()
             self.pick_complete_pub.publish(Empty())
             return

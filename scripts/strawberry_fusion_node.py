@@ -155,7 +155,16 @@ class StrawberryFusionNode(Node):
         cfg = rs.config()
         cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
         cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        self.pipeline.start(cfg)
+        for attempt in range(1, 6):
+            try:
+                self.pipeline.start(cfg)
+                break
+            except RuntimeError as exc:
+                if attempt == 5:
+                    raise
+                self.get_logger().warn(
+                    f"RealSense busy (attempt {attempt}/5): {exc} — retrying in 2s")
+                import time as _t; _t.sleep(2.0)
         self.align = rs.align(rs.stream.color)
         self.get_logger().info("RealSense started.")
 

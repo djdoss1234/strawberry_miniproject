@@ -1089,7 +1089,8 @@ class CuroboPlanner(Node):
                 )
                 if quat_deg != 0.0:
                     self.get_logger().warn(f"grasp retry quat_x={quat_deg:+.1f}deg")
-                ret = self.plan(approach_joints, ee_g_try.tolist(), q_retry)
+                ret = self.plan(approach_joints, ee_g_try.tolist(), q_retry,
+                               num_ik_seeds=128)
                 if ret is not None:
                     used_grasp_offset = grasp_offset
                     used_grasp_quat_deg = quat_deg

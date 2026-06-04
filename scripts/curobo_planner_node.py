@@ -86,6 +86,8 @@ MAX_HARVEST_JOINT_DELTA_DEG = [
 ]
 
 GRIPPER_LEN      = 0.160   # ee_link → TCP 거리 (m)
+WALL_SURFACE_Y_M = 0.672   # whiteboard 전면 Y (environment.yaml center=0.682 - half-thickness 0.01)
+                            # Berry는 이 값보다 멀(뒤) 수 없음 — FK 미보정 오차 클램핑에 사용
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
 # ee_link [w,x,y,z].  Updated from the 2026-06-01 gripper-centered scan poses
 # (rx≈88°, ry≈86°, rz≈-89°).  The previous 2026-05-18 wall-facing quaternion
@@ -964,7 +966,13 @@ class CuroboPlanner(Node):
                 return
 
         p = msg.pose.position
-        raw_straw = np.array([p.x, p.y, max(p.z, 0.05)])
+        raw_y = float(p.y)
+        if raw_y > WALL_SURFACE_Y_M:
+            self.get_logger().warn(
+                f"Detection Y={raw_y*1000:.0f}mm > wall surface {WALL_SURFACE_Y_M*1000:.0f}mm "
+                f"(FK calibration drift) — clamped to {WALL_SURFACE_Y_M*1000:.0f}mm")
+            raw_y = WALL_SURFACE_Y_M
+        raw_straw = np.array([p.x, raw_y, max(p.z, 0.05)])
         straw = raw_straw + np.array([0.0, 0.0, GRASP_Z_BIAS])
         straw[2] = max(straw[2], 0.05)
         x_min, x_max = DIRECT_GRASP_TARGET_X_RANGE_M

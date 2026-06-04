@@ -112,10 +112,10 @@ class StrawberryFusionNode(Node):
         self.declare_parameter("yolo_conf",    0.25)
         self.declare_parameter("kp_conf_min",  0.40)   # keypoint visibility threshold
         self.declare_parameter("infer_every",  3)       # run inference every N camera frames
-        self.declare_parameter("stable_hits_required", 2)
-        self.declare_parameter("track_match_distance_m", 0.050)
-        self.declare_parameter("track_ttl_sec", 1.0)
-        self.declare_parameter("publish_period_sec", 0.7)
+        self.declare_parameter("stable_hits_required", 4)
+        self.declare_parameter("track_match_distance_m", 0.035)
+        self.declare_parameter("track_ttl_sec", 1.5)
+        self.declare_parameter("publish_period_sec", 1.0)
         self.declare_parameter("show_display", True)
 
         seg_path   = os.path.expanduser(self.get_parameter("seg_model").value)
@@ -283,6 +283,68 @@ class StrawberryFusionNode(Node):
         cy = M["m01"] / M["m00"]
         return self._px_to_3d(depth_frame, intr, cx, cy)
 
+    @staticmethod
+    def _polygon_centroid_px(polygon):
+        if len(polygon) < 3:
+            return None
+        M = cv2.moments(polygon.astype(np.float32))
+        if M["m00"] < 1e-6:
+            return None
+        return np.array([M["m10"] / M["m00"], M["m01"] / M["m00"]], dtype=float)
+
+    def _match_seg_for_pose(self, pose_bbox, kps_np, seg_items):
+        """Match a pose detection to one seg mask.
+
+        Close-up views often contain overlapping strawberries/leaves.  The old
+        rule used only the pose bbox center, which can jump between adjacent
+        masks.  Prefer KP0/KP1 containment because those are the stem-side
+        points we actually grasp from; use bbox center only as weak evidence.
+        """
+        pose_cx = (pose_bbox[0] + pose_bbox[2]) / 2.0
+        pose_cy = (pose_bbox[1] + pose_bbox[3]) / 2.0
+        pose_center = np.array([pose_cx, pose_cy], dtype=float)
+
+        points = [("center", pose_center, 1.0)]
+        for ki, weight in ((0, 5.0), (1, 3.0), (2, 1.0)):
+            if ki < len(kps_np):
+                kx, ky, kconf = kps_np[ki]
+                if kconf >= self._kp_min:
+                    points.append((f"kp{ki}", np.array([kx, ky], dtype=float), weight))
+
+        best = None
+        for seg_idx, (cls_id, polygon) in enumerate(seg_items):
+            if len(polygon) < 3:
+                continue
+            poly = polygon.astype(np.float32)
+            score = 0.0
+            evidence = []
+            for name, pt, weight in points:
+                inside = cv2.pointPolygonTest(poly, (float(pt[0]), float(pt[1])), False)
+                if inside >= 0:
+                    score += weight
+                    evidence.append(name)
+            if score <= 0.0:
+                continue
+
+            centroid = self._polygon_centroid_px(polygon)
+            if centroid is not None:
+                # Tie-breaker: closer mask centroid to pose center.  Keep small
+                # influence so KP containment dominates.
+                score -= min(float(np.linalg.norm(pose_center - centroid)) / 250.0, 1.0)
+
+            if best is None or score > best[0]:
+                best = (score, cls_id, polygon, seg_idx, ",".join(evidence))
+
+        if best is None:
+            return None
+        return {
+            "score": best[0],
+            "cls_id": best[1],
+            "polygon": best[2],
+            "seg_idx": best[3],
+            "evidence": best[4],
+        }
+
     # ── main loop ─────────────────────────────────────────────────────────────
     def _loop(self):
         try:
@@ -382,26 +444,17 @@ class StrawberryFusionNode(Node):
                                     (int(kx) + 6, int(ky) - 4),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, kp_colors[ki], 1)
 
-                # Find which seg mask contains this pose bbox center
-                matched_cls = None
-                for cls_id, polygon in seg_items:
-                    if len(polygon) < 3:
-                        continue
-                    inside = cv2.pointPolygonTest(
-                        polygon.astype(np.float32),
-                        (float(pose_cx), float(pose_cy)), False)
-                    if inside >= 0:
-                        matched_cls = cls_id
-                        break
-
-                if matched_cls is None:
+                # Find which seg mask belongs to this pose detection.
+                match = self._match_seg_for_pose(pose_bbox, kps_np, seg_items)
+                if match is None:
                     cv2.putText(vis, "no-seg",
                                 (int(pose_cx), int(pose_cy) - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 120, 120), 1)
                     continue
+                matched_cls = int(match["cls_id"])
 
                 cls_str = {0: "ripe", 1: "unripe", 2: "sick"}.get(matched_cls, str(matched_cls))
-                cv2.putText(vis, f"[{cls_str}]",
+                cv2.putText(vis, f"[{cls_str}:{match['evidence']}]",
                             (int(pose_bbox[0]), int(pose_bbox[1]) - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                             cls_color.get(matched_cls, (200, 200, 200)), 1)
@@ -417,7 +470,7 @@ class StrawberryFusionNode(Node):
                 for ki in range(min(3, len(kps_np))):
                     kx, ky, kconf = kps_np[ki]
                     if kconf >= self._kp_min:
-                        pt3d = self._px_to_3d(depth_f, intr, kx, ky)
+                        pt3d = self._px_to_3d(depth_f, intr, kx, ky, radius=6)
                         if pt3d is not None:
                             kp3d[ki] = pt3d
 

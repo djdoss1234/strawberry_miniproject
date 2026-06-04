@@ -34,7 +34,7 @@ APPROACH_OFFSET  = 0.18    # legacy staged approach distance (disabled during di
 STAGING_EXTRA    = 0.12    # legacy staging distance (disabled during direct-grasp harvest test)
 CLOSE_CONFIRM_OFFSET = 0.10 # far-view target lock 후 grasp 10cm 전에서 close-view geometry 확인
 GRASP_OFFSET     = +0.050   # TCP를 KP0보다 5cm 앞에 세움 — 15.8cm extension이 벽(672mm)에서 26mm 여유
-GRASP_RETRY_OFFSETS = [0.050, 0.065, 0.035]  # 5cm / 6.5cm / 3.5cm 앞 (모두 양수 = 벽 밖)
+GRASP_RETRY_OFFSETS = [0.050]  # SW first-pass: no long IK retry loop; bad targets must fail fast
 RETREAT_OFFSET   = 0.36    # demo: 딸기/벽에서 더 빠져 place 이동 중 스침을 줄임
 RETREAT_UP_M     = 0.05    # retreat 시 위쪽 5cm 추가 — 이웃 딸기 스침 방지
 NEIGHBOR_SPHERE_RADIUS_M = 0.030  # 이웃 딸기 장애물 sphere 반지름 (30mm)
@@ -78,6 +78,9 @@ GRIPPER_LEN      = 0.160   # ee_link → TCP 거리 (m)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
 WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]  # ee_link [w,x,y,z] (2026-05-18)
 GRASP_QUAT_RETRY_DEG = [0.0]  # 현장 운용 기본: orientation 고정, 긴 retry 금지
+CARTESIAN_PLAN_MAX_ATTEMPTS = 2  # unreachable grasp target should not stall for 10s x retries
+CARTESIAN_PLAN_TIMEOUT_SEC = 2.5
+DIRECT_GRASP_TARGET_X_RANGE_M = (-0.28, 0.45)  # reject obvious off-cell picks during SW first harvest
 
 # ── 고정 자세 ─────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG  = [88.0, -80.0, 130.0, 0.0, 20.0, -90.0]
@@ -612,7 +615,14 @@ class CuroboPlanner(Node):
             quaternion=torch.tensor([target_quat_wxyz], device="cuda:0", dtype=torch.float32),
         )
         result = self.motion_gen.plan_single(
-            start_state, target_pose, MotionGenPlanConfig(num_ik_seeds=num_ik_seeds)
+            start_state,
+            target_pose,
+            MotionGenPlanConfig(
+                num_ik_seeds=num_ik_seeds,
+                max_attempts=CARTESIAN_PLAN_MAX_ATTEMPTS,
+                timeout=CARTESIAN_PLAN_TIMEOUT_SEC,
+                enable_graph_attempt=None,
+            ),
         )
         dt = (time.time() - t0) * 1000
 
@@ -915,6 +925,13 @@ class CuroboPlanner(Node):
         raw_straw = np.array([p.x, p.y, max(p.z, 0.05)])
         straw = raw_straw + np.array([0.0, 0.0, GRASP_Z_BIAS])
         straw[2] = max(straw[2], 0.05)
+        x_min, x_max = DIRECT_GRASP_TARGET_X_RANGE_M
+        if not (x_min <= float(raw_straw[0]) <= x_max):
+            self.get_logger().warn(
+                "ABORT: pick target outside direct-grasp first-pass window "
+                f"x={raw_straw[0]*1000:.0f}mm allowed={x_min*1000:.0f}..{x_max*1000:.0f}mm")
+            self.pick_complete_pub.publish(Empty())
+            return
 
         # CuRobo ee_link 목표 위치
         ee_s = straw - (APPROACH_OFFSET + STAGING_EXTRA + GRIPPER_LEN) * WALL_UNIT
@@ -1053,11 +1070,8 @@ class CuroboPlanner(Node):
                 f"quat_x={used_grasp_quat_deg:+.1f}deg")
         else:
             self.get_logger().error("ABORT: grasp CuRobo plan failed for all candidates")
-            ret2 = self.plan(approach_joints, ee_r.tolist(), WALL_QUAT_WXYZ)
-            if ret2 is not None:
-                self.execute_spline(*ret2)
-                approach_joints = ret2[0][-1].tolist()
-            self.plan_to_fixed_joints_pose(approach_joints, HOME_JOINTS_DEG, "home after grasp fail")
+            self.get_logger().warn(
+                "No grasp motion was executed; holding current scan pose instead of retreat/home")
             self._clear_neighbor_obstacles()
             self.pick_complete_pub.publish(Empty())
             return

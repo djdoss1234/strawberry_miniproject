@@ -967,16 +967,15 @@ class CuroboPlanner(Node):
                 return
             retreat_joints = ret[0][-1].tolist()
 
-        transfer_joints = retreat_joints
-
-        if USE_LEFT_SAFE_TRANSFER and raw_straw[0] < LEFT_SAFE_TRANSFER_X_MAX:
-            step += 1
-            self.get_logger().info(f"{step} → left safe transfer")
-            ok, transfer_joints = self.plan_to_fixed_joints_pose(
-                transfer_joints, LEFT_SAFE_TRANSFER_JOINTS_DEG, "left safe transfer")
-            if not ok:
-                self.get_logger().error("ABORT: left safe transfer failed — gripper 유지")
-                return
+        # 항상 HOME 경유: retreat 후 J1이 크게 기울어진 상태에서 place로 직행하면
+        # 벽 근접 궤도가 생김. HOME은 안전한 중립 경유지.
+        step += 1
+        self.get_logger().info(f"{step} → home (pre-place)")
+        ok, transfer_joints = self.plan_to_fixed_joints_pose(
+            retreat_joints, HOME_JOINTS_DEG, "pre-place home")
+        if not ok:
+            self.get_logger().error("ABORT: pre-place home failed — gripper 유지")
+            return
 
         slot_idx, place_slot = self.current_place_slot()
         if place_slot is None:

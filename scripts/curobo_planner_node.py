@@ -80,7 +80,7 @@ WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]  # ee_link [w,x,y,z
 GRASP_QUAT_RETRY_DEG = [0.0, -8.0, 8.0, -15.0, 15.0]  # small wrist pitch search for close SW reachability
 CARTESIAN_PLAN_MAX_ATTEMPTS = 2  # unreachable grasp target should not stall for 10s x retries
 CARTESIAN_PLAN_TIMEOUT_SEC = 1.2
-DIRECT_GRASP_TARGET_X_RANGE_M = (-0.28, 0.45)  # reject obvious off-cell picks during SW first harvest
+DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)  # allow left SW berries; reject only obvious off-board picks
 
 # ── 고정 자세 ─────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG  = [88.0, -80.0, 130.0, 0.0, 20.0, -90.0]

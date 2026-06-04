@@ -72,7 +72,18 @@ OPERATIONAL_JOINT_LIMITS_DEG = [
     (-130.0, 130.0),
     (-225.0, 225.0),   # J6: wrist wrap은 180도 근처까지 허용
 ]
-WRAP_EQUIVALENT_JOINT_IDX = {0, 3, 5}  # J1/J4/J6: same physical angle every 360 deg
+# Only wrist joints are normalized.  Do not rewrite J1: a base branch such as
+# 262 deg is not an acceptable equivalent during harvest because converting it
+# to -98 deg makes the robot swing around the opposite side of the board.
+WRAP_EQUIVALENT_JOINT_IDX = {3, 5}
+MAX_HARVEST_JOINT_DELTA_DEG = [
+    75.0,   # J1: stay on the current cell side
+    90.0,
+    120.0,
+    150.0,
+    130.0,
+    180.0,
+]
 
 GRIPPER_LEN      = 0.160   # ee_link → TCP 거리 (m)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
@@ -570,13 +581,31 @@ class CuroboPlanner(Node):
                 return False
         return True
 
+    def trajectory_has_reasonable_swing(self, traj_rad, start_joints, label):
+        traj_deg = np.rad2deg(traj_rad)
+        start_deg = np.rad2deg(start_joints)
+        for joint_idx, max_delta in enumerate(MAX_HARVEST_JOINT_DELTA_DEG):
+            vals = traj_deg[:, joint_idx]
+            if joint_idx in WRAP_EQUIVALENT_JOINT_IDX:
+                delta_vals = np.abs(((vals - start_deg[joint_idx] + 180.0) % 360.0) - 180.0)
+            else:
+                delta_vals = np.abs(vals - start_deg[joint_idx])
+            delta = float(np.max(delta_vals))
+            if delta > max_delta:
+                self.get_logger().warn(
+                    f"{label} rejected: J{joint_idx + 1} swing {delta:.1f}° "
+                    f"> {max_delta:.1f}° from current harvest pose")
+                return False
+        return True
+
     def normalize_trajectory_equivalents(self, traj_rad, label):
         """Rewrite wrap-capable joints to equivalent angles inside op limits.
 
         cuRobo may return a wrist branch such as J4=262 deg.  Physically this is
         the same pose as -98 deg, but the operational-limit filter sees 262 deg
-        as invalid.  Normalize J1/J4/J6 before checking limits and before
-        sending the path to Doosan.
+        as invalid.  Normalize wrist joints before checking limits and before
+        sending the path to Doosan.  J1 is intentionally not normalized because
+        base wrap changes the side from which the robot approaches the board.
         """
         traj_deg = np.rad2deg(traj_rad).astype(float)
         rewritten = []
@@ -635,6 +664,8 @@ class CuroboPlanner(Node):
             traj = self.normalize_trajectory_equivalents(traj, "Cartesian plan")
             if not self.trajectory_in_operational_limits(traj, "Cartesian plan"):
                 return None
+            if not self.trajectory_has_reasonable_swing(traj, start_joints, "Cartesian plan"):
+                return None
             motion_time = float(result.motion_time.item())
             self.get_logger().info(
                 f"Plan OK {dt:.0f}ms {traj.shape[0]}pts {motion_time:.2f}s | "
@@ -672,6 +703,8 @@ class CuroboPlanner(Node):
             traj = result.get_interpolated_plan().position.cpu().numpy()
             traj = self.normalize_trajectory_equivalents(traj, label)
             if not self.trajectory_in_operational_limits(traj, label):
+                return None
+            if not self.trajectory_has_reasonable_swing(traj, start_joints, label):
                 return None
             motion_time = float(result.motion_time.item())
             self.get_logger().info(

@@ -5,8 +5,8 @@ Strawberry Seg+Pose Fusion Detection Node
 Seg 모델(과실 마스크·익음도) + Pose 모델(줄기 3-키포인트)을 결합하여
 ripe 딸기의 줄기 파지 위치를 계산하고 수확 후보를 퍼블리시합니다.
 
-Fusion 규칙: Pose bbox 중심이 Seg 마스크 안에 있으면 같은 과실.
-수확 후보: class=ripe + Pose 매칭 성공.
+Fusion 규칙: Pose keypoint(KP0/KP1 우선)와 Seg 마스크를 매칭.
+수확 후보: class=ripe + Pose 매칭 성공 + stable track lock.
 
 Published topics:
   /strawberry/detection/pick_pose      (PoseStamped)           — ripe 후보 1개씩
@@ -116,6 +116,9 @@ class StrawberryFusionNode(Node):
         self.declare_parameter("track_match_distance_m", 0.035)
         self.declare_parameter("track_ttl_sec", 1.5)
         self.declare_parameter("publish_period_sec", 1.0)
+        self.declare_parameter("target_lock_enabled", True)
+        self.declare_parameter("target_lock_ttl_sec", 3.0)
+        self.declare_parameter("target_switch_distance_m", 0.090)
         self.declare_parameter("show_display", True)
 
         seg_path   = os.path.expanduser(self.get_parameter("seg_model").value)
@@ -128,6 +131,9 @@ class StrawberryFusionNode(Node):
         self._track_match_dist = float(self.get_parameter("track_match_distance_m").value)
         self._track_ttl_sec = float(self.get_parameter("track_ttl_sec").value)
         self._publish_period_sec = float(self.get_parameter("publish_period_sec").value)
+        self._target_lock_enabled = bool(self.get_parameter("target_lock_enabled").value)
+        self._target_lock_ttl_sec = float(self.get_parameter("target_lock_ttl_sec").value)
+        self._target_switch_dist = float(self.get_parameter("target_switch_distance_m").value)
         self._display = self.get_parameter("show_display").value
 
         # ── calibration ───────────────────────────────────────────────────────
@@ -179,6 +185,8 @@ class StrawberryFusionNode(Node):
         self._frame_n = 0
         self._tracks = {}
         self._next_track_id = 1
+        self._active_track_id = None
+        self._active_last_seen = 0.0
         self._last_seg_items = []   # cached from last inference for smooth viz
         self._last_pose_items = []
         self.timer = self.create_timer(1.0 / 30.0, self._loop)
@@ -230,6 +238,60 @@ class StrawberryFusionNode(Node):
             return False
         track["last_pub"] = now
         return True
+
+    def _select_active_track(self, candidates):
+        """Pick one stable target and hold it briefly to suppress target swaps."""
+        now = time.monotonic()
+        candidates = [c for c in candidates if c["track"]["hits"] >= self._stable_hits]
+        if not candidates:
+            if now - self._active_last_seen > self._target_lock_ttl_sec:
+                self._active_track_id = None
+            return None
+
+        if not self._target_lock_enabled:
+            return min(candidates, key=lambda c: c["center_dist_px"])
+
+        active = None
+        if self._active_track_id is not None:
+            for c in candidates:
+                if c["track_id"] == self._active_track_id:
+                    active = c
+                    break
+            if active is not None:
+                self._active_last_seen = now
+                return active
+
+        # If the detector temporarily changed the track id, keep a nearby stable
+        # candidate instead of jumping to another fruit in the same close-up view.
+        if self._active_track_id in self._tracks:
+            prev = self._tracks[self._active_track_id]["pos"]
+            nearby = [
+                c for c in candidates
+                if float(np.linalg.norm(c["track"]["pos"] - prev)) <= self._target_switch_dist
+            ]
+            if nearby:
+                active = min(nearby, key=lambda c: c["center_dist_px"])
+                self._active_track_id = active["track_id"]
+                self._active_last_seen = now
+                return active
+
+        active = min(candidates, key=lambda c: c["center_dist_px"])
+        self._active_track_id = active["track_id"]
+        self._active_last_seen = now
+        return active
+
+    def _publish_pick_track(self, track):
+        pmsg = PoseStamped()
+        pmsg.header.frame_id    = "base_link"
+        pmsg.header.stamp       = self.get_clock().now().to_msg()
+        pmsg.pose.position.x    = float(track["pos"][0])
+        pmsg.pose.position.y    = float(track["pos"][1])
+        pmsg.pose.position.z    = float(track["pos"][2])
+        pmsg.pose.orientation.x = float(track["quat"][0])
+        pmsg.pose.orientation.y = float(track["quat"][1])
+        pmsg.pose.orientation.z = float(track["quat"][2])
+        pmsg.pose.orientation.w = float(track["quat"][3])
+        self.pick_pub.publish(pmsg)
 
     # ── joint callback ────────────────────────────────────────────────────────
     def _joint_cb(self, msg: JointState):
@@ -424,6 +486,7 @@ class StrawberryFusionNode(Node):
             # ── fusion: match each pose detection to a seg mask ───────────────
             kp_colors = [COLOR_KP0, COLOR_KP1, COLOR_KP2]
             kp_labels = ["KP0", "KP1", "KP2"]
+            ripe_candidates = []
 
             for pose_bbox, kps_np in pose_items:
                 pose_cx = (pose_bbox[0] + pose_bbox[2]) / 2.0
@@ -511,19 +574,17 @@ class StrawberryFusionNode(Node):
                     track_id, track = best_id, self._tracks[best_id]
 
                 stable = track["hits"] >= self._stable_hits
-                if run_infer and self._should_publish_track(track):
-                    # ── publish pick pose ─────────────────────────────────────
-                    pmsg = PoseStamped()
-                    pmsg.header.frame_id    = "base_link"
-                    pmsg.header.stamp       = self.get_clock().now().to_msg()
-                    pmsg.pose.position.x    = float(track["pos"][0])
-                    pmsg.pose.position.y    = float(track["pos"][1])
-                    pmsg.pose.position.z    = float(track["pos"][2])
-                    pmsg.pose.orientation.x = float(track["quat"][0])
-                    pmsg.pose.orientation.y = float(track["quat"][1])
-                    pmsg.pose.orientation.z = float(track["quat"][2])
-                    pmsg.pose.orientation.w = float(track["quat"][3])
-                    self.pick_pub.publish(pmsg)
+                if stable:
+                    # Use image-center priority for the current view, but publish
+                    # only one locked target after all candidates are processed.
+                    img_cx = img.shape[1] * 0.5
+                    img_cy = img.shape[0] * 0.5
+                    center_dist_px = float(np.hypot(pose_cx - img_cx, pose_cy - img_cy))
+                    ripe_candidates.append({
+                        "track_id": track_id,
+                        "track": track,
+                        "center_dist_px": center_dist_px,
+                    })
 
                 gx, gy, gz = track["pos"]
                 label = "PICK" if stable else "WAIT"
@@ -538,6 +599,18 @@ class StrawberryFusionNode(Node):
                     kp2_px = (int(kps_np[2][0]), int(kps_np[2][1]))
                     cv2.arrowedLine(vis, kp0_px, kp2_px,
                                     (0, 200, 255), 2, tipLength=0.3)
+
+            active_candidate = self._select_active_track(ripe_candidates)
+            if run_infer and active_candidate is not None:
+                active_track = active_candidate["track"]
+                if self._should_publish_track(active_track):
+                    self._publish_pick_track(active_track)
+
+            if active_candidate is not None:
+                ax, ay, az = active_candidate["track"]["pos"]
+                cv2.putText(vis,
+                    f"LOCK#{active_candidate['track_id']} ({ax:.3f},{ay:.3f},{az:.3f})",
+                    (10, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_MATCH, 1)
 
             # ── HUD ──────────────────────────────────────────────────────────
             n_ripe = sum(1 for c, _ in seg_items if c == RIPE_CLASS_ID)

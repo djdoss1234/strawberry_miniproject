@@ -30,8 +30,8 @@ from curobo.geom.types import WorldConfig, Cuboid, Sphere
 
 
 # ── 딸기 접근 파라미터 ────────────────────────────────────────────────────────
-APPROACH_OFFSET  = 0.18    # 딸기 앞 18cm (TCP 기준) — 15cm 파츠 장착으로 여유 확보
-STAGING_EXTRA    = 0.12    # staging 추가 거리: approach보다 12cm 더 뒤 (총 30cm)
+APPROACH_OFFSET  = 0.18    # legacy staged approach distance (disabled during direct-grasp harvest test)
+STAGING_EXTRA    = 0.12    # legacy staging distance (disabled during direct-grasp harvest test)
 GRASP_OFFSET     = +0.050   # TCP를 KP0보다 5cm 앞에 세움 — 15.8cm extension이 벽(672mm)에서 26mm 여유
 GRASP_RETRY_OFFSETS = [0.050, 0.065, 0.035]  # 5cm / 6.5cm / 3.5cm 앞 (모두 양수 = 벽 밖)
 RETREAT_OFFSET   = 0.36    # demo: 딸기/벽에서 더 빠져 place 이동 중 스침을 줄임
@@ -39,9 +39,11 @@ RETREAT_UP_M     = 0.05    # retreat 시 위쪽 5cm 추가 — 이웃 딸기 스
 NEIGHBOR_SPHERE_RADIUS_M = 0.030  # 이웃 딸기 장애물 sphere 반지름 (30mm)
 PRE_BIN_CLEAR_OFFSET = 0.42 # place 이동 전 벽에서 충분히 빠지는 clear 지점
 PRE_BIN_CLEAR_RETRY_OFFSETS = [0.42, 0.36, 0.30]
-GRASP_Z_BIAS     = 0.000   # fusion KP0(줄기 시작점) 좌표 그대로 파지
-USE_STAGING      = True    # 30cm staging → 18cm approach → grasp (15cm 파츠 보수적 접근)
+GRASP_Z_BIAS     = -0.030  # stem target compensation: current fusion target is visually too high
+USE_STAGING      = False   # harvest test: current pose → grasp in one cuRobo motion
+USE_APPROACH     = False   # harvest test: skip staging/approach segmentation
 USE_PRE_BIN_CLEAR = False  # demo: retreat 후 place로 바로 이동해 불필요한 우회/딸기 접촉을 줄임
+ENABLE_PLACE_SEQUENCE = False  # table collision risk: hold after retreat; do not move to egg tray yet
 USE_CUROBO_FIXED_POSES = True  # True: home/place 고정 joint 자세도 cuRobo joint-space로 계획
 USE_MOVEJ_FOR_DEMO_PLACE = True # demo: 계란판 위 짧은 release/home만 MoveJoint, 큰 이동은 cuRobo 유지
 ALLOW_MOVEJ_FALLBACK = False   # True: cuRobo 실패 시 MoveJoint로 후퇴. 100% cuRobo 검증 중에는 False 권장
@@ -778,7 +780,12 @@ class CuroboPlanner(Node):
     # ── Pick 시퀀스 ───────────────────────────────────────────────────────────
 
     def pick_pose_cb(self, msg: PoseStamped):
-        """open → approach → grasp → close → [check] → retreat → place → home"""
+        """open → grasp → close → [check] → retreat.
+
+        Egg-tray place is intentionally disabled while the table collision risk
+        is unresolved.  HOME/place recovery will be owned by the later VLA
+        retry policy instead of happening on every pick.
+        """
         if self.current_joints is None:
             self.get_logger().warn("No joint state yet")
             return
@@ -792,11 +799,12 @@ class CuroboPlanner(Node):
             self._pick_busy = False
 
     def _pick(self, msg: PoseStamped):
-        next_slot_idx, next_place_slot = self.current_place_slot()
-        if next_place_slot is None:
-            self.get_logger().error("ABORT: 사용 가능한 place slot 없음 — 계란판 slot 티칭/초기화 필요")
-            self.pick_complete_pub.publish(Empty())
-            return
+        if ENABLE_PLACE_SEQUENCE:
+            next_slot_idx, next_place_slot = self.current_place_slot()
+            if next_place_slot is None:
+                self.get_logger().error("ABORT: 사용 가능한 place slot 없음 — 계란판 slot 티칭/초기화 필요")
+                self.pick_complete_pub.publish(Empty())
+                return
 
         p = msg.pose.position
         raw_straw = np.array([p.x, p.y, max(p.z, 0.05)])
@@ -860,18 +868,23 @@ class CuroboPlanner(Node):
             approach_start_joints = ret[0][-1].tolist()
             step += 1
 
-        # CuRobo: current/staging → approach (15cm)
-        self.get_logger().info(f"{step} approach (CuRobo 15cm)")
-        ret = self.plan(approach_start_joints, ee_a.tolist(), WALL_QUAT_WXYZ)
-        if ret is None:
-            self.get_logger().error("ABORT: approach plan failed")
-            self.plan_to_fixed_joints_pose(self.current_joints, HOME_JOINTS_DEG, "home after approach fail")
-            return
-        if not self.execute_spline(*ret):
-            self.get_logger().error("ABORT: approach exec failed")
-            return
-        approach_joints = ret[0][-1].tolist()
-        step += 1
+        if USE_APPROACH:
+            # CuRobo: current/staging → approach (15cm)
+            self.get_logger().info(f"{step} approach (CuRobo 15cm)")
+            ret = self.plan(approach_start_joints, ee_a.tolist(), WALL_QUAT_WXYZ)
+            if ret is None:
+                self.get_logger().error("ABORT: approach plan failed")
+                self.plan_to_fixed_joints_pose(self.current_joints, HOME_JOINTS_DEG, "home after approach fail")
+                return
+            if not self.execute_spline(*ret):
+                self.get_logger().error("ABORT: approach exec failed")
+                return
+            approach_joints = ret[0][-1].tolist()
+            step += 1
+        else:
+            self.get_logger().info(
+                f"{step} direct grasp mode: skipping staging/approach segmentation")
+            approach_joints = approach_start_joints
 
         # CuRobo: approach → grasp
         self.get_logger().info(f"{step} grasp (CuRobo)")
@@ -939,11 +952,20 @@ class CuroboPlanner(Node):
             self.set_held_strawberry_collision(False)
             self.call_trigger(self.cli_gripper_open)
             self.vla_request_pub.publish(msg)
-            self.plan_to_fixed_joints_pose(retreat_joints, HOME_JOINTS_DEG, "home after grasp check fail")
+            self.get_logger().warn(
+                "HOME recovery skipped; future VLA retry policy will decide recovery motion")
             self._clear_neighbor_obstacles()
             self.pick_complete_pub.publish(Empty())
             return
         self.set_held_strawberry_collision(True)
+
+        if not ENABLE_PLACE_SEQUENCE:
+            self.get_logger().warn(
+                "PLACE_DISABLED table collision risk — holding after retreat, no egg-tray move")
+            self._clear_neighbor_obstacles()
+            self.pick_complete_pub.publish(Empty())
+            self.get_logger().info("=== PICK COMPLETE (NO PLACE) ===")
+            return
 
         # 8. Place
         if USE_PRE_BIN_CLEAR:

@@ -273,6 +273,8 @@ class CuroboPlanner(Node):
         self._scene_positions: list = []   # /strawberry/detection/scene_positions 수신값
         self._latest_pick_pose: PoseStamped | None = None
         self._latest_pick_pose_time = 0.0
+        self._latest_detection_pose: PoseStamped | None = None
+        self._latest_detection_pose_time = 0.0
 
         # ── cuRobo 초기화 ─────────────────────────────────────────────────────
         config_dir = os.path.join(
@@ -316,6 +318,9 @@ class CuroboPlanner(Node):
             callback_group=self.service_cb_group)
         self.create_subscription(
             PoseStamped, "/dsr01/curobo/pick_pose", self.pick_pose_cb, 10,
+            callback_group=self.service_cb_group)
+        self.create_subscription(
+            PoseStamped, "/strawberry/detection/pick_pose", self._detection_pick_cb, 10,
             callback_group=self.service_cb_group)
         self.create_subscription(
             String, "/dsr01/curobo/obstacles", self.obstacles_cb, 10,
@@ -365,6 +370,17 @@ class CuroboPlanner(Node):
 
     def _stroke_cb(self, msg: Int32):
         self.gripper_stroke = msg.data
+
+    def _detection_pick_cb(self, msg: PoseStamped):
+        """Latest live fusion output.
+
+        `/dsr01/curobo/pick_pose` is a trigger relayed by scan_executor and is
+        not continuously published during the pick.  Close-confirm needs the
+        live detector topic so it can verify geometry after the robot moves
+        closer without starting a new pick recursively.
+        """
+        self._latest_detection_pose = msg
+        self._latest_detection_pose_time = time.monotonic()
 
     def target_pose_cb(self, msg: PoseStamped):
         if self.current_joints is None:
@@ -842,8 +858,8 @@ class CuroboPlanner(Node):
         deadline = time.monotonic() + CLOSE_CONFIRM_TIMEOUT_SEC
         best_dist = None
         while time.monotonic() < deadline:
-            latest = self._latest_pick_pose
-            latest_t = self._latest_pick_pose_time
+            latest = self._latest_detection_pose
+            latest_t = self._latest_detection_pose_time
             if latest is not None and latest_t >= since_time:
                 p = latest.pose.position
                 latest_pos = np.array([p.x, p.y, max(p.z, 0.05)], dtype=float)
@@ -857,7 +873,7 @@ class CuroboPlanner(Node):
 
         if best_dist is None:
             self.get_logger().warn(
-                "CLOSE_CONFIRM_FAIL no fresh locked pick_pose after close-view dwell")
+                "CLOSE_CONFIRM_FAIL no fresh live detection pick_pose after close-view dwell")
         else:
             self.get_logger().warn(
                 f"CLOSE_CONFIRM_FAIL target drift best={best_dist*1000:.1f}mm "

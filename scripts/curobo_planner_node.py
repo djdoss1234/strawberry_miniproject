@@ -34,7 +34,7 @@ APPROACH_OFFSET  = 0.18    # legacy staged approach distance (disabled during di
 STAGING_EXTRA    = 0.12    # legacy staging distance (disabled during direct-grasp harvest test)
 CLOSE_CONFIRM_OFFSET = 0.10 # far-view target lock 후 grasp 10cm 전에서 close-view geometry 확인
 GRASP_OFFSET     = +0.050   # TCP를 KP0보다 5cm 앞에 세움 — 15.8cm extension이 벽(672mm)에서 26mm 여유
-GRASP_RETRY_OFFSETS = [0.050]  # SW first-pass: no long IK retry loop; bad targets must fail fast
+GRASP_RETRY_OFFSETS = [0.050, 0.065, 0.080, 0.100]  # deep grasp first; back off if IK cannot reach
 RETREAT_OFFSET   = 0.36    # demo: 딸기/벽에서 더 빠져 place 이동 중 스침을 줄임
 RETREAT_UP_M     = 0.05    # retreat 시 위쪽 5cm 추가 — 이웃 딸기 스침 방지
 NEIGHBOR_SPHERE_RADIUS_M = 0.030  # 이웃 딸기 장애물 sphere 반지름 (30mm)
@@ -77,9 +77,9 @@ WRAP_EQUIVALENT_JOINT_IDX = {0, 3, 5}  # J1/J4/J6: same physical angle every 360
 GRIPPER_LEN      = 0.160   # ee_link → TCP 거리 (m)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
 WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]  # ee_link [w,x,y,z] (2026-05-18)
-GRASP_QUAT_RETRY_DEG = [0.0]  # 현장 운용 기본: orientation 고정, 긴 retry 금지
+GRASP_QUAT_RETRY_DEG = [0.0, -8.0, 8.0, -15.0, 15.0]  # small wrist pitch search for close SW reachability
 CARTESIAN_PLAN_MAX_ATTEMPTS = 2  # unreachable grasp target should not stall for 10s x retries
-CARTESIAN_PLAN_TIMEOUT_SEC = 2.5
+CARTESIAN_PLAN_TIMEOUT_SEC = 1.2
 DIRECT_GRASP_TARGET_X_RANGE_M = (-0.28, 0.45)  # reject obvious off-cell picks during SW first harvest
 
 # ── 고정 자세 ─────────────────────────────────────────────────────────────────

@@ -32,6 +32,7 @@ from curobo.geom.types import WorldConfig, Cuboid, Sphere
 # ── 딸기 접근 파라미터 ────────────────────────────────────────────────────────
 APPROACH_OFFSET  = 0.18    # legacy staged approach distance (disabled during direct-grasp harvest test)
 STAGING_EXTRA    = 0.12    # legacy staging distance (disabled during direct-grasp harvest test)
+CLOSE_CONFIRM_OFFSET = 0.10 # far-view target lock 후 grasp 10cm 전에서 close-view geometry 확인
 GRASP_OFFSET     = +0.050   # TCP를 KP0보다 5cm 앞에 세움 — 15.8cm extension이 벽(672mm)에서 26mm 여유
 GRASP_RETRY_OFFSETS = [0.050, 0.065, 0.035]  # 5cm / 6.5cm / 3.5cm 앞 (모두 양수 = 벽 밖)
 RETREAT_OFFSET   = 0.36    # demo: 딸기/벽에서 더 빠져 place 이동 중 스침을 줄임
@@ -42,6 +43,10 @@ PRE_BIN_CLEAR_RETRY_OFFSETS = [0.42, 0.36, 0.30]
 GRASP_Z_BIAS     = +0.025  # grasp stem 2.5cm above each berry's KP0
 USE_STAGING      = False   # harvest test: current pose → grasp in one cuRobo motion
 USE_APPROACH     = False   # harvest test: skip staging/approach segmentation
+USE_CLOSE_CONFIRM = True   # far-view target은 유지하고, grasp 직전 close-view KP/depth 확인
+CLOSE_CONFIRM_DWELL_SEC = 1.2
+CLOSE_CONFIRM_TIMEOUT_SEC = 2.5
+CLOSE_CONFIRM_MAX_TARGET_DRIFT_M = 0.08
 USE_PRE_BIN_CLEAR = False  # demo: retreat 후 place로 바로 이동해 불필요한 우회/딸기 접촉을 줄임
 ENABLE_PLACE_SEQUENCE = False  # table collision risk: hold after retreat; do not move to egg tray yet
 USE_CUROBO_FIXED_POSES = True  # True: home/place 고정 joint 자세도 cuRobo joint-space로 계획
@@ -265,6 +270,8 @@ class CuroboPlanner(Node):
         self.placed_cuboids = []
         self.neighbor_spheres: list = []   # 현재 씬 이웃 딸기 장애물 (pick마다 갱신)
         self._scene_positions: list = []   # /strawberry/detection/scene_positions 수신값
+        self._latest_pick_pose: PoseStamped | None = None
+        self._latest_pick_pose_time = 0.0
 
         # ── cuRobo 초기화 ─────────────────────────────────────────────────────
         config_dir = os.path.join(
@@ -777,6 +784,38 @@ class CuroboPlanner(Node):
             f"Grasp check: stroke={self.gripper_stroke} → {'OK' if ok else 'FAIL (fully closed)'}")
         return ok
 
+    def _wait_for_close_confirmation(self, locked_straw: np.ndarray, since_time: float) -> bool:
+        """Confirm that the locked target is still geometrically visible close-up.
+
+        The maturity class is intentionally not re-decided here.  The far scan
+        chooses ripe/unripe/sick; close view only checks that the same target
+        still has a valid fused pick pose near the locked grasp point.
+        """
+        deadline = time.monotonic() + CLOSE_CONFIRM_TIMEOUT_SEC
+        best_dist = None
+        while time.monotonic() < deadline:
+            latest = self._latest_pick_pose
+            latest_t = self._latest_pick_pose_time
+            if latest is not None and latest_t >= since_time:
+                p = latest.pose.position
+                latest_pos = np.array([p.x, p.y, max(p.z, 0.05)], dtype=float)
+                dist = float(np.linalg.norm(latest_pos - locked_straw))
+                best_dist = dist if best_dist is None else min(best_dist, dist)
+                if dist <= CLOSE_CONFIRM_MAX_TARGET_DRIFT_M:
+                    self.get_logger().info(
+                        f"CLOSE_CONFIRM_OK target drift={dist*1000:.1f}mm")
+                    return True
+            time.sleep(0.05)
+
+        if best_dist is None:
+            self.get_logger().warn(
+                "CLOSE_CONFIRM_FAIL no fresh locked pick_pose after close-view dwell")
+        else:
+            self.get_logger().warn(
+                f"CLOSE_CONFIRM_FAIL target drift best={best_dist*1000:.1f}mm "
+                f"> {CLOSE_CONFIRM_MAX_TARGET_DRIFT_M*1000:.0f}mm")
+        return False
+
     # ── Pick 시퀀스 ───────────────────────────────────────────────────────────
 
     def pick_pose_cb(self, msg: PoseStamped):
@@ -789,6 +828,8 @@ class CuroboPlanner(Node):
         if self.current_joints is None:
             self.get_logger().warn("No joint state yet")
             return
+        self._latest_pick_pose = msg
+        self._latest_pick_pose_time = time.monotonic()
         if self._pick_busy:
             self.get_logger().warn("Pick already in progress — ignored")
             return
@@ -814,6 +855,7 @@ class CuroboPlanner(Node):
         # CuRobo ee_link 목표 위치
         ee_s = straw - (APPROACH_OFFSET + STAGING_EXTRA + GRIPPER_LEN) * WALL_UNIT
         ee_a = straw - (APPROACH_OFFSET + GRIPPER_LEN) * WALL_UNIT
+        ee_c = straw - (CLOSE_CONFIRM_OFFSET + GRIPPER_LEN) * WALL_UNIT
         grasp_retry_offsets = self.grasp_candidates_for_target(straw)
         ee_g = straw - (grasp_retry_offsets[0] + GRIPPER_LEN) * WALL_UNIT
         ee_g_candidates = [
@@ -885,6 +927,34 @@ class CuroboPlanner(Node):
             self.get_logger().info(
                 f"{step} direct grasp mode: skipping staging/approach segmentation")
             approach_joints = approach_start_joints
+
+        if USE_CLOSE_CONFIRM:
+            self.get_logger().info(
+                f"{step} close-confirm (CuRobo {CLOSE_CONFIRM_OFFSET*100:.0f}cm before grasp)")
+            ret = self.plan(approach_joints, ee_c.tolist(), WALL_QUAT_WXYZ)
+            if ret is None:
+                self.get_logger().error("ABORT: close-confirm plan failed")
+                self._clear_neighbor_obstacles()
+                self.pick_complete_pub.publish(Empty())
+                return
+            if not self.execute_spline(*ret):
+                self.get_logger().error("ABORT: close-confirm exec failed")
+                self._clear_neighbor_obstacles()
+                self.pick_complete_pub.publish(Empty())
+                return
+            approach_joints = ret[0][-1].tolist()
+            close_confirm_start = time.monotonic()
+            time.sleep(CLOSE_CONFIRM_DWELL_SEC)
+            if not self._wait_for_close_confirmation(straw, close_confirm_start):
+                self.get_logger().warn(
+                    "ABORT: close-view target not confirmed — retreat without grasp")
+                ret_retreat = self.plan(approach_joints, ee_r.tolist(), WALL_QUAT_WXYZ)
+                if ret_retreat is not None:
+                    self.execute_spline(*ret_retreat)
+                self._clear_neighbor_obstacles()
+                self.pick_complete_pub.publish(Empty())
+                return
+            step += 1
 
         # CuRobo: approach → grasp
         self.get_logger().info(f"{step} grasp (CuRobo)")

@@ -308,14 +308,24 @@ class CuroboPlanner(Node):
         self.get_logger().info("cuRobo MotionGen warmed up!")
 
         # ── ROS2 인터페이스 ───────────────────────────────────────────────────
-        self.create_subscription(JointState, "/dsr01/joint_states", self.joint_state_cb, 10)
-        self.create_subscription(PoseStamped, "/dsr01/curobo/target_pose", self.target_pose_cb, 10)
-        self.create_subscription(PoseStamped, "/dsr01/curobo/pick_pose", self.pick_pose_cb, 10)
-        self.create_subscription(String, "/dsr01/curobo/obstacles", self.obstacles_cb, 10)
-        self.create_subscription(Int32, "/dsr01/gripper/stroke", self._stroke_cb, 10)
         self.create_subscription(
-            Float64MultiArray, "/strawberry/detection/scene_positions", self._scene_cb, 10
-        )
+            JointState, "/dsr01/joint_states", self.joint_state_cb, 10,
+            callback_group=self.service_cb_group)
+        self.create_subscription(
+            PoseStamped, "/dsr01/curobo/target_pose", self.target_pose_cb, 10,
+            callback_group=self.service_cb_group)
+        self.create_subscription(
+            PoseStamped, "/dsr01/curobo/pick_pose", self.pick_pose_cb, 10,
+            callback_group=self.service_cb_group)
+        self.create_subscription(
+            String, "/dsr01/curobo/obstacles", self.obstacles_cb, 10,
+            callback_group=self.service_cb_group)
+        self.create_subscription(
+            Int32, "/dsr01/gripper/stroke", self._stroke_cb, 10,
+            callback_group=self.service_cb_group)
+        self.create_subscription(
+            Float64MultiArray, "/strawberry/detection/scene_positions", self._scene_cb, 10,
+            callback_group=self.service_cb_group)
 
         self.pick_complete_pub = self.create_publisher(Empty, "/dsr01/curobo/pick_complete", 10)
         self.vla_request_pub = self.create_publisher(PoseStamped, "/strawberry/vla/request", 10)

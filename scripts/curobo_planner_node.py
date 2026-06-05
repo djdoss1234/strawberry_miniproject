@@ -743,11 +743,17 @@ class CuroboPlanner(Node):
         self.call_trigger(self.cli_gripper_close)
         time.sleep(1.5)
 
-        # 4. Retreat
+        # 4. Retreat → HOME
         self.get_logger().info("4 retreat (CuRobo)")
         ret = self.plan(grasp_joints, ee_r.tolist(), WALL_QUAT_WXYZ)
         if ret is not None:
             self.execute_spline(*ret)
+            retreat_joints = ret[0][-1].tolist()
+            self.get_logger().info("4b home after retreat")
+            ok, _ = self.plan_to_fixed_joints_pose(retreat_joints, HOME_JOINTS_DEG, "home after retreat")
+            if not ok:
+                self.get_logger().warn("home after retreat failed — MoveJoint direct")
+                self.movej_direct(self.home_joints_near_current())
         else:
             self.get_logger().warn("Retreat plan failed — home으로 직행")
             ok, _ = self.plan_to_fixed_joints_pose(

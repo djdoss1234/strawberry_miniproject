@@ -571,6 +571,20 @@ class CuroboPlanner(Node):
             self.get_logger().error("Spline failed/timeout")
         return ok
 
+    def home_joints_near_current(self):
+        """J4/J6은 현재 위치에서 가장 가까운 360° equivalent로 HOME 조인트 계산."""
+        if self.current_joints is None:
+            return HOME_JOINTS_DEG
+        current_deg = np.rad2deg(self.current_joints)
+        home = list(HOME_JOINTS_DEG)
+        for i in WRAP_EQUIVALENT_JOINT_IDX:
+            lo, hi = OPERATIONAL_JOINT_LIMITS_DEG[i]
+            candidates = [home[i] + 360.0 * k for k in range(-2, 3)]
+            valid = [c for c in candidates if lo <= c <= hi]
+            if valid:
+                home[i] = min(valid, key=lambda c: abs(c - current_deg[i]))
+        return home
+
     def movej_direct(self, joints_deg, vel=40.0, acc=60.0):
         """cuRobo 우회 — Doosan MoveJoint 직접 호출. 최후 수단용."""
         if not self.cli_movej.wait_for_service(timeout_sec=3.0):
@@ -729,8 +743,6 @@ class CuroboPlanner(Node):
         self.call_trigger(self.cli_gripper_close)
         time.sleep(1.5)
 
-        self.set_held_strawberry_collision(True)
-
         # 4. Retreat
         self.get_logger().info("4 retreat (CuRobo)")
         ret = self.plan(grasp_joints, ee_r.tolist(), WALL_QUAT_WXYZ)
@@ -742,7 +754,7 @@ class CuroboPlanner(Node):
                 grasp_joints, HOME_JOINTS_DEG, "home after retreat fail")
             if not ok:
                 self.get_logger().error("CuRobo home failed — MoveJoint direct to HOME (swing filter bypass)")
-                self.movej_direct(HOME_JOINTS_DEG)
+                self.movej_direct(self.home_joints_near_current())
 
         self._clear_neighbor_obstacles()
         self.pick_complete_pub.publish(Empty())

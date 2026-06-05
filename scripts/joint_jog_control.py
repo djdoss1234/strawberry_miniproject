@@ -33,6 +33,15 @@ DEFAULT_STEP_DEG = 1.0
 MIN_STEP_DEG = 0.1
 MAX_STEP_DEG = 10.0
 STEP_DEG_DELTA = 0.5
+
+NAMED_POSES = {
+    "0": ("home",     [ 88.00, -80.00, 130.00,   0.00,  20.00,  -90.00]),
+    "1": ("overview", [ 87.98, -94.92, 129.89, 175.94, -31.34,   93.42]),
+    "2": ("nw",       [144.09,  22.90,  -1.00,-238.52, -75.31,  108.68]),
+    "3": ("ne",       [ 18.91,  25.97,   1.00,  74.58,  78.17, -115.61]),
+    "4": ("se",       [ 22.71,  -4.60, 103.56,  97.69,  68.16, -190.82]),
+    "5": ("sw",       [150.27, -11.92, 109.11, -97.81,  63.33,   10.46]),
+}
 class RawTerminal:
     def __enter__(self):
         self.fd = sys.stdin.fileno()
@@ -113,6 +122,7 @@ class JointJogControl(Node):
         print("  w/s       move selected joint +/- step degrees (fallback)")
         print("  a/d       step degrees -/+ (fallback)")
         print("  g         input 6 joint degrees and move")
+        print("  n         move to named pose (home/overview/nw/ne/se/sw)")
         print("  o         gripper open")
         print("  c         gripper close")
         print("  p         print current joints")
@@ -263,6 +273,19 @@ class JointJogControl(Node):
             self.print_status()
         elif key == "h":
             self.print_help()
+        elif key == "n":
+            with CookedInput(raw_term):
+                print("\nNamed poses:")
+                for k, (name, _) in NAMED_POSES.items():
+                    print(f"  {k}: {name}")
+                choice = input("Select (0-5): ").strip()
+            if choice in NAMED_POSES:
+                name, joints = NAMED_POSES[choice]
+                print(f"Moving to {name}: {[round(v,2) for v in joints]}")
+                self.target_joints_deg = list(joints)
+                self.send_movej(joints, sync_type=0, wait=True)
+            else:
+                print("Invalid choice")
         elif key == "o":
             self.call_gripper(self.cli_gripper_open, "open")
         elif key == "c":

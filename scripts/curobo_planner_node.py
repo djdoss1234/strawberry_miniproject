@@ -38,7 +38,7 @@ NEIGHBOR_SPHERE_RADIUS_M = 0.030
 GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
-WALL_QUAT_WXYZ   = [0.676657, -0.736089, -0.012929, 0.011885]  # tool-Z = WALL_UNIT (재계산 2026-06-05)
+WALL_QUAT_WXYZ   = [-0.469346, 0.528881, -0.512132, -0.487566]  # tool-Z = WALL_UNIT, tool-Y = -X (jaw 수평, 재계산 2026-06-05)
 # (회전축, 각도°) — 정면 유지하되 아래에서위 제거, 위→아래/좌→우/우→좌 추가
 # X축: 위아래 pitch (음수=위에서아래), Z축: 좌우 yaw, Y축: jaw roll (접근축 기준 회전)
 GRASP_QUAT_RETRY_VARIANTS: list = [
@@ -450,6 +450,28 @@ class CuroboPlanner(Node):
                 f"{label} joint equivalent rewrite: " + "; ".join(rewritten))
         return np.deg2rad(traj_deg)
 
+    def trajectory_has_no_spline_jumps(self, traj_rad, label, max_jump_deg=270.0):
+        """normalize 후 연속 waypoint 간 대형 각도 점프 검사.
+
+        J4/J6가 ±한계 경계를 넘으면 normalize가 강제로 반대 부호로 바꾸면서
+        직전 waypoint와 357° 차이가 생기고 Doosan 스플라인이 360° 스핀함.
+        이를 실행 전에 탐지해서 plan 자체를 reject.
+        """
+        traj_deg = np.rad2deg(traj_rad)
+        for joint_idx in WRAP_EQUIVALENT_JOINT_IDX:
+            diffs = np.abs(np.diff(traj_deg[:, joint_idx]))
+            if len(diffs) == 0:
+                continue
+            max_diff = float(np.max(diffs))
+            if max_diff > max_jump_deg:
+                bad_idx = int(np.argmax(diffs))
+                self.get_logger().warn(
+                    f"{label} rejected: J{joint_idx+1} spline jump {max_diff:.1f}° "
+                    f"> {max_jump_deg:.1f}° at waypoint {bad_idx} "
+                    f"(limit boundary crossing — normalize 불연속)")
+                return False
+        return True
+
     def plan(self, start_joints, target_pos, target_quat_wxyz, num_ik_seeds=32):
         t0 = time.time()
         start_joints = self._clamp_joints(start_joints)
@@ -476,6 +498,8 @@ class CuroboPlanner(Node):
             traj = result.get_interpolated_plan().position.cpu().numpy()
             traj = self.normalize_trajectory_equivalents(traj, "Cartesian plan")
             if not self.trajectory_in_operational_limits(traj, "Cartesian plan"):
+                return None
+            if not self.trajectory_has_no_spline_jumps(traj, "Cartesian plan"):
                 return None
             if not self.trajectory_has_reasonable_swing(traj, start_joints, "Cartesian plan"):
                 return None
@@ -759,8 +783,11 @@ class CuroboPlanner(Node):
             self.execute_spline(*ret)
             retreat_joints = ret[0][-1].tolist()
             self.get_logger().info("4b overview after retreat (swing check off)")
+            # overview_joints_near_current(): J4/J6를 현재 위치 기준 가장 가까운
+            # 360° 등가로 선택 → retreat 후 J4=-87°에서 175°(263° 스윙) 대신
+            # -184°(94° 스윙)으로 이동
             ok, _ = self.plan_to_fixed_joints_pose(
-                retreat_joints, OVERVIEW_JOINTS_DEG, "overview after retreat",
+                retreat_joints, self.overview_joints_near_current(), "overview after retreat",
                 skip_swing_check=True)
             if not ok:
                 self.get_logger().warn("overview after retreat failed — MoveJoint direct")
@@ -768,7 +795,7 @@ class CuroboPlanner(Node):
         else:
             self.get_logger().warn("Retreat plan failed — overview 직행")
             ok, _ = self.plan_to_fixed_joints_pose(
-                grasp_joints, OVERVIEW_JOINTS_DEG, "overview after retreat fail",
+                grasp_joints, self.overview_joints_near_current(), "overview after retreat fail",
                 skip_swing_check=True)
             if not ok:
                 self.get_logger().error("CuRobo overview failed — MoveJoint direct")

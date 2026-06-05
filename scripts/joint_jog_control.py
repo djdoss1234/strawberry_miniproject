@@ -22,6 +22,7 @@ import os
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_srvs.srv import Trigger
 from dsr_msgs2.srv import GetRobotMode, GetRobotState, MoveJoint
 
 
@@ -85,6 +86,8 @@ class JointJogControl(Node):
         self.cli_movej = self.create_client(MoveJoint, "/dsr01/motion/move_joint")
         self.cli_mode = self.create_client(GetRobotMode, "/dsr01/system/get_robot_mode")
         self.cli_state = self.create_client(GetRobotState, "/dsr01/system/get_robot_state")
+        self.cli_gripper_open = self.create_client(Trigger, "/dsr01/gripper/open")
+        self.cli_gripper_close = self.create_client(Trigger, "/dsr01/gripper/close")
         self.get_logger().info("Joint jog control ready")
         self.print_help()
 
@@ -110,6 +113,8 @@ class JointJogControl(Node):
         print("  w/s       move selected joint +/- step degrees (fallback)")
         print("  a/d       step degrees -/+ (fallback)")
         print("  g         input 6 joint degrees and move")
+        print("  o         gripper open")
+        print("  c         gripper close")
         print("  p         print current joints")
         print("  h         help")
         print("  q         quit")
@@ -225,6 +230,21 @@ class JointJogControl(Node):
         print(f"MoveJoint -> {[round(v, 2) for v in joints]}")
         self.send_movej(joints, sync_type=0, wait=True)
 
+    def call_gripper(self, client, label):
+        if not client.wait_for_service(timeout_sec=1.0):
+            print(f"gripper service not available")
+            return
+        future = client.call_async(Trigger.Request())
+        end = time.time() + 5.0
+        while not future.done() and time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.02)
+        res = future.result()
+        if res and res.success:
+            print(f"gripper {label} OK")
+        else:
+            msg = res.message if res else "timeout"
+            print(f"gripper {label} FAIL: {msg}")
+
     def handle_key(self, key, raw_term):
         if key in ["1", "2", "3", "4", "5", "6"]:
             if self.current_joints_deg() is not None:
@@ -243,6 +263,10 @@ class JointJogControl(Node):
             self.print_status()
         elif key == "h":
             self.print_help()
+        elif key == "o":
+            self.call_gripper(self.cli_gripper_open, "open")
+        elif key == "c":
+            self.call_gripper(self.cli_gripper_close, "close")
         elif key == "g":
             with CookedInput(raw_term):
                 text = input("\nEnter 6 joint degrees (comma/space separated): ")

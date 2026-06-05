@@ -30,7 +30,7 @@ from curobo.geom.types import WorldConfig, Cuboid, Sphere
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
 GRASP_OFFSET        = +0.050   # TCP↔berry 거리 (m) — 조정 시 extension sphere 벽 간섭 주의
 GRASP_RETRY_OFFSETS = [0.050, 0.065, 0.080, 0.100]
-GRASP_Z_BIAS        = +0.025   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
+GRASP_Z_BIAS        = -0.070   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
 RETREAT_OFFSET      = 0.36
 RETREAT_UP_M        = 0.05     # retreat 시 Z 추가 (이웃 딸기 스침 방지)
 NEIGHBOR_SPHERE_RADIUS_M = 0.030
@@ -39,7 +39,17 @@ GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
 WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]  # tool-Z ≈ WALL_UNIT
-GRASP_QUAT_RETRY_DEG = [0.0, -8.0, 8.0, -15.0, 15.0]
+# (회전축, 각도°) — 정면 유지하되 아래에서위 제거, 위→아래/좌→우/우→좌 추가
+# X축: 위아래 pitch (음수=위에서아래), Z축: 좌우 yaw, Y축: jaw roll (접근축 기준 회전)
+GRASP_QUAT_RETRY_VARIANTS: list = [
+    ([1, 0, 0],  0.0),   # 정면 (기본)
+    ([1, 0, 0], -15.0),  # 위에서 아래 (약)
+    ([0, 0, 1], -15.0),  # 좌 → 우
+    ([0, 0, 1], +15.0),  # 우 → 좌
+    ([1, 0, 0], -25.0),  # 위에서 아래 (강)
+    ([0, 0, 1], -25.0),  # 좌 → 우 (강)
+    ([0, 0, 1], +25.0),  # 우 → 좌 (강)
+]
 
 CARTESIAN_PLAN_MAX_ATTEMPTS = 2
 CARTESIAN_PLAN_TIMEOUT_SEC  = 1.2
@@ -636,27 +646,27 @@ class CuroboPlanner(Node):
 
         # 2. Grasp (cuRobo Cartesian)
         n_offsets = len(ee_g_candidates)
-        n_quats   = len(GRASP_QUAT_RETRY_DEG)
+        n_quats   = len(GRASP_QUAT_RETRY_VARIANTS)
         self.get_logger().info(
             f"2 grasp (CuRobo) — trying {n_offsets} offsets × {n_quats} quats "
             f"| target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
             f"| start_J1={np.rad2deg(self.current_joints[0]):.1f}°")
         ret = None
         used_grasp_offset = None
-        used_grasp_quat_deg = None
+        used_grasp_variant = None
         grasp_attempt = 0
         for grasp_offset, ee_g_try in ee_g_candidates:
-            for quat_deg in GRASP_QUAT_RETRY_DEG:
+            for axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
                 grasp_attempt += 1
                 q_retry = quat_multiply_wxyz(
                     WALL_QUAT_WXYZ,
-                    quat_from_axis_angle([1, 0, 0], np.deg2rad(quat_deg)),
+                    quat_from_axis_angle(axis, np.deg2rad(quat_deg)),
                 )
                 ret = self.plan(self.current_joints, ee_g_try.tolist(), q_retry,
                                 num_ik_seeds=128)
                 if ret is not None:
                     used_grasp_offset = grasp_offset
-                    used_grasp_quat_deg = quat_deg
+                    used_grasp_variant = (axis, quat_deg)
                     break
             if ret is not None:
                 break
@@ -678,7 +688,7 @@ class CuroboPlanner(Node):
         if not self.execute_spline(*ret):
             self.get_logger().error(
                 f"ABORT: grasp spline 실행 실패 "
-                f"(offset={used_grasp_offset:+.3f}m quat_x={used_grasp_quat_deg:+.1f}°)")
+                f"(offset={used_grasp_offset:+.3f}m variant={used_grasp_variant})")
             self._clear_neighbor_obstacles()
             self.pick_complete_pub.publish(Empty())
             return
@@ -686,7 +696,7 @@ class CuroboPlanner(Node):
         grasp_joints = ret[0][-1].tolist()
         self.get_logger().info(
             f"grasp OK — offset={used_grasp_offset:+.3f}m "
-            f"quat_x={used_grasp_quat_deg:+.1f}° "
+            f"variant={used_grasp_variant} "
             f"(attempt {grasp_attempt}/{n_offsets * n_quats})")
 
         # 3. 그리퍼 닫기

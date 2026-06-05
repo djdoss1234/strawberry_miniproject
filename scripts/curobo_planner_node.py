@@ -421,7 +421,9 @@ class CuroboPlanner(Node):
         for joint_idx, max_delta in enumerate(MAX_HARVEST_JOINT_DELTA_DEG):
             vals = traj_deg[:, joint_idx]
             if joint_idx in WRAP_EQUIVALENT_JOINT_IDX:
-                delta_vals = np.abs(((vals - start_deg[joint_idx] + 180.0) % 360.0) - 180.0)
+                # endpoint 등가 거리가 아닌 trajectory 실제 range 검사:
+                # normalize가 "돌아가는 방향"을 따라붙어도 310° 스윙을 탐지
+                delta_vals = np.abs(vals - float(vals[0]))
             else:
                 delta_vals = np.abs(vals - start_deg[joint_idx])
             delta = float(np.max(delta_vals))

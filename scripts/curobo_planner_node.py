@@ -38,7 +38,7 @@ NEIGHBOR_SPHERE_RADIUS_M = 0.030
 GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
-WALL_QUAT_WXYZ   = [-0.469346, 0.528881, -0.512132, -0.487566]  # tool-Z = WALL_UNIT, tool-Y = -X (jaw 수평, 재계산 2026-06-05)
+WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]    # FK 실측 롤백 (commit 723938b) — 새 계산값이 SW 셀에서 IK 배위 불안정
 # (회전축, 각도°) — 정면 유지하되 아래에서위 제거, 위→아래/좌→우/우→좌 추가
 # X축: 위아래 pitch (음수=위에서아래), Z축: 좌우 yaw, Y축: jaw roll (접근축 기준 회전)
 GRASP_QUAT_RETRY_VARIANTS: list = [
@@ -67,7 +67,7 @@ OPERATIONAL_JOINT_LIMITS_DEG = [
     (-225.0, 225.0),   # J1
     (-95.0,   95.0),
     (-155.0, 155.0),
-    (-270.0, 270.0),   # J4: SW scan pose=262.2° → ±175°로 제한 시 Doosan 360° 스핀 발생
+    (-280.0, 280.0),   # J4: SW scan pose=262.2°, retreat 시 274° 도달 → ±270° 시 normalize 불연속 발생
     (-130.0, 130.0),
     (-225.0, 225.0),
 ]

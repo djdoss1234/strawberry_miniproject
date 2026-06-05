@@ -38,7 +38,7 @@ NEIGHBOR_SPHERE_RADIUS_M = 0.030
 GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
-WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]  # tool-Z ≈ WALL_UNIT
+WALL_QUAT_WXYZ   = [0.676657, -0.736089, -0.012929, 0.011885]  # tool-Z = WALL_UNIT (재계산 2026-06-05)
 # (회전축, 각도°) — 정면 유지하되 아래에서위 제거, 위→아래/좌→우/우→좌 추가
 # X축: 위아래 pitch (음수=위에서아래), Z축: 좌우 yaw, Y축: jaw roll (접근축 기준 회전)
 GRASP_QUAT_RETRY_VARIANTS: list = [

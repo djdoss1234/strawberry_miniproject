@@ -6,6 +6,7 @@ Pick sequence: open → grasp(CuRobo) → close → retreat(CuRobo) → pick_com
 
 import os
 import time
+import threading
 import torch
 import numpy as np
 import json
@@ -45,6 +46,7 @@ CARTESIAN_PLAN_TIMEOUT_SEC  = 1.2
 DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 
 OPEN_GRIPPER_ON_PICK_START = True
+GRIPPER_OPEN_WAIT_SEC     = 0.8   # 그리퍼 완전 개방 보장 시간 (plan과 병렬 실행)
 
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG = [88.0, -80.0, 130.0, 0.0, 20.0, -90.0]
@@ -620,12 +622,17 @@ class CuroboPlanner(Node):
         # 0. 이웃 딸기 장애물 등록
         self._register_neighbor_obstacles(straw)
 
-        # 1. 그리퍼 열기
-        self.get_logger().info("1 open gripper")
+        # 1. 그리퍼 열기 + 플랜 병렬 시작 (그리퍼 여는 동안 plan 계산)
         self.set_held_strawberry_collision(False)
+        gripper_open_deadline = 0.0
         if OPEN_GRIPPER_ON_PICK_START:
-            self.call_trigger(self.cli_gripper_open)
-            time.sleep(1.5)
+            self.get_logger().info("1 open gripper (parallel with planning)")
+            t_open = time.time()
+            threading.Thread(
+                target=lambda: self.call_trigger(self.cli_gripper_open),
+                daemon=True,
+            ).start()
+            gripper_open_deadline = t_open + GRIPPER_OPEN_WAIT_SEC
 
         # 2. Grasp (cuRobo Cartesian)
         n_offsets = len(ee_g_candidates)
@@ -662,6 +669,11 @@ class CuroboPlanner(Node):
             self._clear_neighbor_obstacles()
             self.pick_complete_pub.publish(Empty())
             return
+
+        # 그리퍼 완전 개방 보장 (plan이 빨리 끝났으면 남은 시간만 대기)
+        remaining = gripper_open_deadline - time.time()
+        if remaining > 0:
+            time.sleep(remaining)
 
         if not self.execute_spline(*ret):
             self.get_logger().error(

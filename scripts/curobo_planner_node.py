@@ -59,7 +59,8 @@ OPEN_GRIPPER_ON_PICK_START = True
 GRIPPER_OPEN_WAIT_SEC     = 0.8   # 그리퍼 완전 개방 보장 시간 (plan과 병렬 실행)
 
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
-HOME_JOINTS_DEG = [88.0, -80.0, 130.0, 0.0, 20.0, -90.0]
+HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
+OVERVIEW_JOINTS_DEG = [87.98, -94.92, 129.89, 175.94, -31.34, 93.42]  # 스캔 기준 포즈
 
 # ── cuRobo 운용 한계 ───────────────────────────────────────────────────────────
 OPERATIONAL_JOINT_LIMITS_DEG = [
@@ -496,7 +497,7 @@ class CuroboPlanner(Node):
                 self.diagnose_start_world_collision(start_joints, "Cartesian plan")
             return None
 
-    def plan_js(self, start_joints, target_joints_rad, label):
+    def plan_js(self, start_joints, target_joints_rad, label, skip_swing_check=False):
         t0 = time.time()
         start_joints = self._clamp_joints(start_joints)
         target_joints_rad = self._clamp_joints(target_joints_rad)
@@ -518,7 +519,7 @@ class CuroboPlanner(Node):
             traj = self.normalize_trajectory_equivalents(traj, label)
             if not self.trajectory_in_operational_limits(traj, label):
                 return None
-            if not self.trajectory_has_reasonable_swing(traj, start_joints, label):
+            if not skip_swing_check and not self.trajectory_has_reasonable_swing(traj, start_joints, label):
                 return None
             motion_time = float(result.motion_time.item())
             self.get_logger().info(
@@ -571,19 +572,25 @@ class CuroboPlanner(Node):
             self.get_logger().error("Spline failed/timeout")
         return ok
 
-    def home_joints_near_current(self):
-        """J4/J6은 현재 위치에서 가장 가까운 360° equivalent로 HOME 조인트 계산."""
+    def _nearest_equivalent_joints(self, base_joints_deg):
+        """J4/J6를 현재 위치에서 가장 가까운 360° equivalent로 조정."""
         if self.current_joints is None:
-            return HOME_JOINTS_DEG
+            return base_joints_deg
         current_deg = np.rad2deg(self.current_joints)
-        home = list(HOME_JOINTS_DEG)
+        joints = list(base_joints_deg)
         for i in WRAP_EQUIVALENT_JOINT_IDX:
             lo, hi = OPERATIONAL_JOINT_LIMITS_DEG[i]
-            candidates = [home[i] + 360.0 * k for k in range(-2, 3)]
+            candidates = [joints[i] + 360.0 * k for k in range(-2, 3)]
             valid = [c for c in candidates if lo <= c <= hi]
             if valid:
-                home[i] = min(valid, key=lambda c: abs(c - current_deg[i]))
-        return home
+                joints[i] = min(valid, key=lambda c: abs(c - current_deg[i]))
+        return joints
+
+    def home_joints_near_current(self):
+        return self._nearest_equivalent_joints(HOME_JOINTS_DEG)
+
+    def overview_joints_near_current(self):
+        return self._nearest_equivalent_joints(OVERVIEW_JOINTS_DEG)
 
     def movej_direct(self, joints_deg, vel=40.0, acc=60.0):
         """cuRobo 우회 — Doosan MoveJoint 직접 호출. 최후 수단용."""
@@ -610,10 +617,12 @@ class CuroboPlanner(Node):
             self.get_logger().error("MoveJoint direct failed/timeout")
         return ok
 
-    def plan_to_fixed_joints_pose(self, start_joints, target_joints_deg, label):
+    def plan_to_fixed_joints_pose(self, start_joints, target_joints_deg, label,
+                                   skip_swing_check=False):
         """고정 joint 자세 이동 — cuRobo joint-space plan."""
         target_joints_rad = np.deg2rad(target_joints_deg).tolist()
-        ret = self.plan_js(start_joints, target_joints_rad, label)
+        ret = self.plan_js(start_joints, target_joints_rad, label,
+                           skip_swing_check=skip_swing_check)
         if ret is not None and self.execute_spline(*ret):
             return True, ret[0][-1].tolist()
         self.get_logger().warn(f"{label} CuRobo joint-space failed")
@@ -749,18 +758,21 @@ class CuroboPlanner(Node):
         if ret is not None:
             self.execute_spline(*ret)
             retreat_joints = ret[0][-1].tolist()
-            self.get_logger().info("4b home after retreat")
-            ok, _ = self.plan_to_fixed_joints_pose(retreat_joints, HOME_JOINTS_DEG, "home after retreat")
-            if not ok:
-                self.get_logger().warn("home after retreat failed — MoveJoint direct")
-                self.movej_direct(self.home_joints_near_current())
-        else:
-            self.get_logger().warn("Retreat plan failed — home으로 직행")
+            self.get_logger().info("4b overview after retreat (swing check off)")
             ok, _ = self.plan_to_fixed_joints_pose(
-                grasp_joints, HOME_JOINTS_DEG, "home after retreat fail")
+                retreat_joints, OVERVIEW_JOINTS_DEG, "overview after retreat",
+                skip_swing_check=True)
             if not ok:
-                self.get_logger().error("CuRobo home failed — MoveJoint direct to HOME (swing filter bypass)")
-                self.movej_direct(self.home_joints_near_current())
+                self.get_logger().warn("overview after retreat failed — MoveJoint direct")
+                self.movej_direct(self.overview_joints_near_current())
+        else:
+            self.get_logger().warn("Retreat plan failed — overview 직행")
+            ok, _ = self.plan_to_fixed_joints_pose(
+                grasp_joints, OVERVIEW_JOINTS_DEG, "overview after retreat fail",
+                skip_swing_check=True)
+            if not ok:
+                self.get_logger().error("CuRobo overview failed — MoveJoint direct")
+                self.movej_direct(self.overview_joints_near_current())
 
         self._clear_neighbor_obstacles()
         self.pick_complete_pub.publish(Empty())

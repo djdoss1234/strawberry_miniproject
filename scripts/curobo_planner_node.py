@@ -54,8 +54,8 @@ CARTESIAN_PLAN_MAX_ATTEMPTS = 2
 CARTESIAN_PLAN_TIMEOUT_SEC  = 1.2
 DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 
-OPEN_GRIPPER_ON_PICK_START  = True
-GRIPPER_APPROACH_POS        = 500  # 접근 시 개도 (0=완전열림, 700=완전닫힘) — 이웃 줄기 걸림 방지
+OPEN_GRIPPER_ON_PICK_START  = False  # 스캔 이동 중 이미 600으로 설정됨 → pick 시작 시 별도 동작 없음
+GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (0=완전열림, 700=완전닫힘) — 이웃 줄기 걸림 방지
 GRIPPER_APPROACH_WAIT_SEC   = 1.5  # 접근 포지션 완료 대기 (plan과 병렬)
 
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────

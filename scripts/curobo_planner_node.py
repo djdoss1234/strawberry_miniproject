@@ -55,8 +55,8 @@ ALLOW_MOVEJ_FALLBACK = False   # True: cuRobo 실패 시 MoveJoint로 후퇴. 10
 USE_CUROBO_SELF_COLLISION = False  # 현재 coarse sphere 모델은 정상 자세도 self-collision으로 오검출함
 USE_PLACED_STRAWBERRY_OBSTACLES = False  # demo: 놓인 딸기 obstacle은 영상 성공 후 다시 켜서 검증
 MAX_SPLINE_POINTS = 12         # Doosan spline point가 너무 많으면 실기에서 뚝뚝 끊겨 보임
-SPLINE_TIME_SCALE = 0.375      # close-confirm test: previous 0.75 대비 약 2배 빠르게 실행
-SPLINE_MIN_TIME = 0.25
+SPLINE_TIME_SCALE = 1.125      # 1/3 속도 (cuRobo plan_time × 1.125)
+SPLINE_MIN_TIME = 0.75
 USE_TRAY_ENTRY_WAYPOINT = False # demo: 각 slot above로 바로 이동
 USE_LEFT_SAFE_TRANSFER = True   # 맨 왼쪽 딸기는 place 전 안전 자세를 거쳐 주변 딸기 스침을 줄임
 LEFT_SAFE_TRANSFER_X_MAX = -0.10
@@ -68,7 +68,7 @@ OPERATIONAL_JOINT_LIMITS_DEG = [
     (-225.0, 225.0),   # J1: 오른쪽 딸기 branch는 200도 근처까지 필요
     (-95.0, 95.0),
     (-155.0, 155.0),
-    (-175.0, 175.0),   # J4: 과도한 wrist flip 금지 (hw limit ±180°)
+    (-270.0, 270.0),   # J4: SW scan pose = 262.2° → ±175°로 제한하면 정규화 후 -97.8°로 변환 → Doosan 360° 스핀 발생
     (-130.0, 130.0),
     (-225.0, 225.0),   # J6: wrist wrap은 180도 근처까지 허용
 ]

@@ -150,7 +150,7 @@ USE_GRASP_CHECK  = False  # /gripper/stroke는 현재 명령값이라 실제 파
 GRASP_STROKE_MIN = 10   # stroke 이하면 파지 실패 (완전 닫힘)
 
 # ── 그리퍼 soft close ─────────────────────────────────────────────────────────
-USE_SOFT_CLOSE    = True
+USE_SOFT_CLOSE    = False  # False: trigger full close in one shot
 OPEN_GRIPPER_ON_PICK_START = True
 GRIPPER_PRE_CLOSE_POS = 300     # 접촉 전 1차 닫힘
 GRIPPER_CONTACT_POS   = 420     # 스퀴지 딸기 표면 접촉 위치
@@ -1150,7 +1150,11 @@ class CuroboPlanner(Node):
             retreat_joints = ret[0][-1].tolist()
         else:
             self.get_logger().warn("Retreat plan failed — home으로 직행")
-            retreat_joints = grasp_joints
+            ok, retreat_joints = self.plan_to_fixed_joints_pose(
+                grasp_joints, HOME_JOINTS_DEG, "home after retreat fail")
+            if not ok:
+                self.get_logger().error("Home after retreat also failed — robot at grasp position")
+                retreat_joints = grasp_joints
 
         if not grasp_ok:
             self.get_logger().warn("파지 실패 — VLA 이관 후 abort")

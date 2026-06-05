@@ -6,7 +6,6 @@ Pick sequence: open → grasp(CuRobo) → close → retreat(CuRobo) → pick_com
 
 import os
 import time
-import threading
 import torch
 import numpy as np
 import json
@@ -16,7 +15,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Float64MultiArray, String, Empty
+from std_msgs.msg import Float64MultiArray, String, Empty, Int32
 from std_srvs.srv import Trigger
 from dsr_msgs2.srv import MoveSplineJoint, MoveJoint
 
@@ -29,8 +28,8 @@ from curobo.geom.types import WorldConfig, Cuboid, Sphere
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
 GRASP_OFFSET        = +0.030   # TCP↔berry 거리 (m) — 조정 시 extension sphere 벽 간섭 주의
-GRASP_RETRY_OFFSETS = [0.050, 0.065, 0.080, 0.100]
-GRASP_Z_BIAS        = -0.075   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
+GRASP_RETRY_OFFSETS = [0.040, 0.050, 0.065, 0.080]
+GRASP_Z_BIAS        = +0.005   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
 RETREAT_OFFSET      = 0.36
 RETREAT_UP_M        = 0.05     # retreat 시 Z 추가 (이웃 딸기 스침 방지)
 NEIGHBOR_SPHERE_RADIUS_M = 0.030
@@ -55,8 +54,9 @@ CARTESIAN_PLAN_MAX_ATTEMPTS = 2
 CARTESIAN_PLAN_TIMEOUT_SEC  = 1.2
 DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 
-OPEN_GRIPPER_ON_PICK_START = True
-GRIPPER_OPEN_WAIT_SEC     = 0.8   # 그리퍼 완전 개방 보장 시간 (plan과 병렬 실행)
+OPEN_GRIPPER_ON_PICK_START  = True
+GRIPPER_APPROACH_POS        = 380  # 접근 시 개도 (0=완전열림, 700=완전닫힘) — 이웃 줄기 걸림 방지
+GRIPPER_APPROACH_WAIT_SEC   = 1.5  # 접근 포지션 완료 대기 (plan과 병렬)
 
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
@@ -226,6 +226,7 @@ class CuroboPlanner(Node):
             callback_group=self.service_cb_group)
 
         self.pick_complete_pub = self.create_publisher(Empty, "/dsr01/curobo/pick_complete", 10)
+        self.gripper_pos_pub = self.create_publisher(Int32, "/dsr01/gripper/position_cmd", 10)
 
         self.cli_spline = self.create_client(
             MoveSplineJoint, "/dsr01/motion/move_spline_joint",
@@ -711,17 +712,18 @@ class CuroboPlanner(Node):
         # 0. 이웃 딸기 장애물 등록
         self._register_neighbor_obstacles(straw)
 
-        # 1. 그리퍼 열기 + 플랜 병렬 시작 (그리퍼 여는 동안 plan 계산)
+        # 1. 그리퍼 pre-grasp 포지션 + 플랜 병렬 시작
+        # 완전 열기(0) 대신 GRIPPER_APPROACH_POS로만 열어 이웃 줄기 걸림 방지
         self.set_held_strawberry_collision(False)
         gripper_open_deadline = 0.0
         if OPEN_GRIPPER_ON_PICK_START:
-            self.get_logger().info("1 open gripper (parallel with planning)")
+            self.get_logger().info(
+                f"1 gripper pre-grasp pos={GRIPPER_APPROACH_POS} (parallel with planning)")
             t_open = time.time()
-            threading.Thread(
-                target=lambda: self.call_trigger(self.cli_gripper_open),
-                daemon=True,
-            ).start()
-            gripper_open_deadline = t_open + GRIPPER_OPEN_WAIT_SEC
+            msg = Int32()
+            msg.data = GRIPPER_APPROACH_POS
+            self.gripper_pos_pub.publish(msg)
+            gripper_open_deadline = t_open + GRIPPER_APPROACH_WAIT_SEC
 
         # 2. Grasp (cuRobo Cartesian)
         n_offsets = len(grasp_retry_offsets)

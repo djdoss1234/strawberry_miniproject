@@ -28,9 +28,9 @@ from curobo.geom.types import WorldConfig, Cuboid, Sphere
 
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
-GRASP_OFFSET        = +0.050   # TCP↔berry 거리 (m) — 조정 시 extension sphere 벽 간섭 주의
+GRASP_OFFSET        = +0.030   # TCP↔berry 거리 (m) — 조정 시 extension sphere 벽 간섭 주의
 GRASP_RETRY_OFFSETS = [0.050, 0.065, 0.080, 0.100]
-GRASP_Z_BIAS        = -0.070   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
+GRASP_Z_BIAS        = -0.075   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
 RETREAT_OFFSET      = 0.36
 RETREAT_UP_M        = 0.05     # retreat 시 Z 추가 (이웃 딸기 스침 방지)
 NEIGHBOR_SPHERE_RADIUS_M = 0.030
@@ -571,6 +571,31 @@ class CuroboPlanner(Node):
             self.get_logger().error("Spline failed/timeout")
         return ok
 
+    def movej_direct(self, joints_deg, vel=40.0, acc=60.0):
+        """cuRobo 우회 — Doosan MoveJoint 직접 호출. 최후 수단용."""
+        if not self.cli_movej.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error("MoveJoint service not available")
+            return False
+        req = MoveJoint.Request()
+        req.pos = [float(v) for v in joints_deg]
+        req.vel = float(vel)
+        req.acc = float(acc)
+        req.time = 0.0
+        req.radius = 0.0
+        req.mode = 0
+        req.blend_type = 0
+        req.sync_type = 0
+        self.get_logger().warn(
+            f"MoveJoint direct → {[round(v, 1) for v in joints_deg]}° vel={vel}")
+        future = self.cli_movej.call_async(req)
+        t0 = time.time()
+        while not future.done() and (time.time() - t0) < 90.0:
+            time.sleep(0.05)
+        ok = future.done() and future.result() and future.result().success
+        if not ok:
+            self.get_logger().error("MoveJoint direct failed/timeout")
+        return ok
+
     def plan_to_fixed_joints_pose(self, start_joints, target_joints_deg, label):
         """고정 joint 자세 이동 — cuRobo joint-space plan."""
         target_joints_rad = np.deg2rad(target_joints_deg).tolist()
@@ -716,7 +741,8 @@ class CuroboPlanner(Node):
             ok, _ = self.plan_to_fixed_joints_pose(
                 grasp_joints, HOME_JOINTS_DEG, "home after retreat fail")
             if not ok:
-                self.get_logger().error("Home after retreat also failed — robot at grasp position")
+                self.get_logger().error("CuRobo home failed — MoveJoint direct to HOME (swing filter bypass)")
+                self.movej_direct(HOME_JOINTS_DEG)
 
         self._clear_neighbor_obstacles()
         self.pick_complete_pub.publish(Empty())

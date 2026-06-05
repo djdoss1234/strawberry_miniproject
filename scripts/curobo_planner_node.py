@@ -118,6 +118,15 @@ def quat_from_axis_angle(axis, angle_rad):
     return [np.cos(angle_rad / 2.0), axis[0] * s, axis[1] * s, axis[2] * s]
 
 
+def quat_rotate_vec(q_wxyz, v):
+    """쿼터니언 q_wxyz=[w,x,y,z]으로 벡터 v를 회전."""
+    w, x, y, z = q_wxyz
+    qvec = np.array([x, y, z])
+    v = np.array(v, dtype=float)
+    t = 2.0 * np.cross(qvec, v)
+    return v + w * t + np.cross(qvec, t)
+
+
 def load_environment_cuboids():
     if not os.path.exists(ENVIRONMENT_YAML):
         return [Cuboid(name="table", pose=[0.0, 0.0, -0.02, 1, 0, 0, 0], dims=[1.2, 1.2, 0.04])]
@@ -690,12 +699,8 @@ class CuroboPlanner(Node):
             return
 
         grasp_retry_offsets = self.grasp_candidates_for_target(straw)
-        ee_g_candidates = [
-            (offset, straw - (offset + GRIPPER_LEN) * WALL_UNIT)
-            for offset in grasp_retry_offsets
-        ]
-        ee_r = (straw - (RETREAT_OFFSET + GRIPPER_LEN) * WALL_UNIT
-                + np.array([0.0, 0.0, RETREAT_UP_M]))
+        # ee_g는 루프 내에서 각 q_retry의 실제 접근 방향(그리퍼 Z축)으로 계산
+        # ee_r도 성공한 approach_dir을 이용해 grasp 이후 계산
 
         self.get_logger().info(
             f"=== PICK 딸기 raw=({raw_straw[0]*1000:.0f},{raw_straw[1]*1000:.0f},{raw_straw[2]*1000:.0f})mm "
@@ -717,7 +722,7 @@ class CuroboPlanner(Node):
             gripper_open_deadline = t_open + GRIPPER_OPEN_WAIT_SEC
 
         # 2. Grasp (cuRobo Cartesian)
-        n_offsets = len(ee_g_candidates)
+        n_offsets = len(grasp_retry_offsets)
         n_quats   = len(GRASP_QUAT_RETRY_VARIANTS)
         self.get_logger().info(
             f"2 grasp (CuRobo) — trying {n_offsets} offsets × {n_quats} quats "
@@ -726,19 +731,26 @@ class CuroboPlanner(Node):
         ret = None
         used_grasp_offset = None
         used_grasp_variant = None
+        used_approach_dir = None
         grasp_attempt = 0
-        for grasp_offset, ee_g_try in ee_g_candidates:
+        for grasp_offset in grasp_retry_offsets:
             for axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
                 grasp_attempt += 1
                 q_retry = quat_multiply_wxyz(
                     WALL_QUAT_WXYZ,
                     quat_from_axis_angle(axis, np.deg2rad(quat_deg)),
                 )
+                # ee_link 목표 = 딸기에서 실제 그리퍼 접근축(Z축) 방향으로 후퇴
+                # WALL_UNIT이 아닌 q_retry 회전의 Z축을 사용해야 tilt variant 시
+                # TCP가 의도한 위치에 정확히 도달함
+                approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
+                ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
                 ret = self.plan(self.current_joints, ee_g_try.tolist(), q_retry,
                                 num_ik_seeds=128)
                 if ret is not None:
                     used_grasp_offset = grasp_offset
                     used_grasp_variant = (axis, quat_deg)
+                    used_approach_dir = approach_dir
                     break
             if ret is not None:
                 break
@@ -778,6 +790,8 @@ class CuroboPlanner(Node):
 
         # 4. Retreat → HOME
         self.get_logger().info("4 retreat (CuRobo)")
+        ee_r = (straw - (RETREAT_OFFSET + GRIPPER_LEN) * used_approach_dir
+                + np.array([0.0, 0.0, RETREAT_UP_M]))
         ret = self.plan(grasp_joints, ee_r.tolist(), WALL_QUAT_WXYZ)
         if ret is not None:
             self.execute_spline(*ret)

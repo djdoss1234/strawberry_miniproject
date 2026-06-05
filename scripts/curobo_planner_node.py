@@ -55,7 +55,7 @@ CARTESIAN_PLAN_TIMEOUT_SEC  = 1.2
 DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 
 OPEN_GRIPPER_ON_PICK_START  = True
-GRIPPER_APPROACH_POS        = 380  # 접근 시 개도 (0=완전열림, 700=완전닫힘) — 이웃 줄기 걸림 방지
+GRIPPER_APPROACH_POS        = 500  # 접근 시 개도 (0=완전열림, 700=완전닫힘) — 이웃 줄기 걸림 방지
 GRIPPER_APPROACH_WAIT_SEC   = 1.5  # 접근 포지션 완료 대기 (plan과 병렬)
 
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
@@ -750,7 +750,7 @@ class CuroboPlanner(Node):
                 approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
                 ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
                 ret = self.plan(self.current_joints, ee_g_try.tolist(), q_retry,
-                                num_ik_seeds=128)
+                                num_ik_seeds=64)
                 if ret is not None:
                     used_grasp_offset = grasp_offset
                     used_grasp_variant = (axis, quat_deg)

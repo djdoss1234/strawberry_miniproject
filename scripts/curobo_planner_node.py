@@ -246,6 +246,21 @@ class CuroboPlanner(Node):
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
 
+        # 노드 시작 시 그리퍼를 approach 위치로 초기화 (2s 후 — gripper_service_node 연결 여유)
+        self._gripper_init_done = False
+        self.create_timer(2.0, self._init_gripper_once)
+
+    def _init_gripper_once(self):
+        if not self._gripper_init_done:
+            self._gripper_init_done = True
+            self._reset_gripper()
+
+    def _reset_gripper(self):
+        """파지 완료/실패 후 그리퍼를 approach 위치(GRIPPER_APPROACH_POS)로 복귀."""
+        msg = Int32()
+        msg.data = GRIPPER_APPROACH_POS
+        self.gripper_pos_pub.publish(msg)
+
     # ── 콜백 ──────────────────────────────────────────────────────────────────
 
     def joint_state_cb(self, msg: JointState):
@@ -765,6 +780,7 @@ class CuroboPlanner(Node):
                 f"(target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
                 f"start_J=[{', '.join(f'{np.rad2deg(v):.0f}' for v in self.current_joints)}]°)")
             self._clear_neighbor_obstacles()
+            self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
             return
 
@@ -778,6 +794,7 @@ class CuroboPlanner(Node):
                 f"ABORT: grasp spline 실행 실패 "
                 f"(offset={used_grasp_offset:+.3f}m variant={used_grasp_variant})")
             self._clear_neighbor_obstacles()
+            self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
             return
 
@@ -820,6 +837,7 @@ class CuroboPlanner(Node):
                 self.movej_direct(self.overview_joints_near_current())
 
         self._clear_neighbor_obstacles()
+        self._reset_gripper()  # 다음 파지를 위해 approach 위치(600)로 복귀
         self.pick_complete_pub.publish(Empty())
         self.get_logger().info("=== PICK COMPLETE ===")
 

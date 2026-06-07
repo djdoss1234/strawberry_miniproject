@@ -1,0 +1,26 @@
+[INFO] [1780835375.297447243] [curobo_planner_node]: cuRobo MotionGen warmed up!
+[INFO] [1780835375.311241177] [curobo_planner_node]: cuRobo Planner Ready!
+[INFO] [1780835375.311680672] [curobo_planner_node]:   ENV_CUBOIDS=1  SELF_COLLISION=False
+[INFO] [1780835375.311906750] [curobo_planner_node]:   WALL_QUAT_WXYZ=[0.548415, -0.439294, 0.424628, 0.570923] approach_dir=[-0.0359, 0.9667, 0.2534] elevation=+14.7deg
+[INFO] [1780835375.312420004] [curobo_planner_node]:   allowed grasp pitch corrections/elevations: -14.7->-0.0deg, -10.0->+4.7deg, -5.0->+9.7deg
+[INFO] [1780835375.312649783] [curobo_planner_node]:   environment loaded: /home/user/doosan_ws/src/e0509_gripper_description/config/environment.yaml
+[WARN] [1780835375.608459971] [curobo_planner_node]: Detection Y=718mm > wall surface 672mm (FK calibration drift) — clamped to 672mm
+[INFO] [1780835375.608711577] [curobo_planner_node]: === PICK 딸기 raw=(-175,672,578)mm grasp=(-175,672,583)mm ===
+[INFO] [1780835375.615489013] [curobo_planner_node]: World updated (neighbor obstacles registered): static=1 dynamic=0 neighbor_spheres=5
+[INFO] [1780835375.615673069] [curobo_planner_node]: Registered 5 neighbor sphere obstacle(s)
+[INFO] [1780835375.616159940] [curobo_planner_node]: 2 grasp (CuRobo 2-step) — trying 4 offsets × 3 quats | target=(-175,672,583)mm | start_J1=150.3°
+[INFO] [1780835377.394870455] [curobo_planner_node]: Plan OK 1775ms 31pts 0.56s | goal=['-163', '332', '583']mm | end_J=[134.4, -23.3, 107.8, 276.0, 42.6, -7.4]°
+[INFO] [1780835378.921284647] [curobo_planner_node]: Plan OK 1526ms 48pts 0.86s | goal=['-168', '472', '583']mm | end_J=[118.3, -5.0, 94.0, 272.1, 26.3, -1.6]°
+[INFO] [1780835378.921915477] [curobo_planner_node]: Spline 12pts plan=0.56s exec=0.75s → end=['134.4', '-23.3', '107.8', '276.0', '42.6', '-7.4']°
+[INFO] [1780835381.928503578] [curobo_planner_node]: PRE_APPROACH_REACHED — target locked, settling 1.0s before 140.0mm straight grasp advance
+[INFO] [1780835382.929460411] [curobo_planner_node]: FINAL_APPROACH_STRAIGHT TOOL +Z 140.0mm vel=20.0mm/s
+[INFO] [1780835391.248355160] [curobo_planner_node]: grasp OK — offset=+0.040m variant=('base', [1, 0, 0], -14.7) approach_dir=[-0.0359, 0.9994, -0.0002] elevation=-0.0deg (attempt 1/12)
+[INFO] [1780835391.248716347] [curobo_planner_node]: 3 close gripper
+[INFO] [1780835394.653886475] [curobo_planner_node]: 4 retreat (CuRobo)
+[INFO] [1780835395.835157494] [curobo_planner_node]: Plan OK 1180ms 50pts 0.89s | goal=['-156', '152', '633']mm | end_J=[187.6, -33.0, 105.0, 268.3, 95.3, -17.4]°
+[INFO] [1780835395.835757334] [curobo_planner_node]: Spline 12pts plan=0.89s exec=1.00s → end=['187.6', '-33.0', '105.0', '268.3', '95.3', '-17.4']°
+[INFO] [1780835401.498097709] [curobo_planner_node]: 4b overview after retreat (swing check off)
+[INFO] [1780835406.958563650] [curobo_planner_node]: overview after retreat JS Plan OK 5459ms 60pts 1.07s | goal=['88.0', '-94.4', '129.9', '175.9', '-31.3', '93.4']°
+[INFO] [1780835406.959231001] [curobo_planner_node]: Spline 12pts plan=1.07s exec=1.20s → end=['88.0', '-94.4', '129.9', '175.9', '-31.3', '93.4']°
+[INFO] [1780835412.626138645] [curobo_planner_node]: World updated (neighbor obstacles cleared): static=1 dynamic=0 neighbor_spheres=0
+[INFO] [1780835412.626744974] [curobo_planner_node]: === PICK COMPLETE ===

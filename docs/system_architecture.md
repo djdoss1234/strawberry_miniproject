@@ -22,14 +22,15 @@ flowchart LR
     subgraph PLANNING["Planning & Sequencing Node<br/>scripts/curobo_planner_node.py"]
         STATE["/dsr01/joint_states<br/>current joints"]
         WORLD["cuRobo world model<br/>whiteboard / demo collision setup"]
-        CUROBO["cuRobo MotionGen<br/>approach / grasp / retreat / transfer"]
-        SEQ["Pick-place state machine<br/>open -> approach -> grasp -> close -> retreat -> place"]
+        CUROBO["cuRobo MotionGen<br/>pre-approach / grasp endpoint validation / retreat"]
+        SEQ["Harvest sequence<br/>pre-approach -> stop -> straight advance -> close -> retreat"]
         SLOTS["config/place_slots.yaml<br/>slot above / release joints"]
         SAFETY["Safety heuristics<br/>J1 branch check / left-safe transfer / offsets"]
     end
 
     subgraph EXEC["Robot Execution"]
         SPLINE["Doosan MoveSplineJoint<br/>/dsr01/motion/move_spline_joint"]
+        MOVEL["Doosan MoveLine<br/>/dsr01/motion/move_line<br/>slow TOOL +Z final grasp advance"]
         MOVEJ["Doosan MoveJoint<br/>/dsr01/motion/move_joint<br/>short place/home moves"]
         OPEN["/dsr01/gripper/open"]
         POSCMD["/dsr01/gripper/position_cmd<br/>soft close steps"]
@@ -57,12 +58,14 @@ flowchart LR
     SAFETY --> SEQ
     SEQ --> CUROBO
     CUROBO --> SPLINE
+    SEQ --> MOVEL
     SEQ --> MOVEJ
     SEQ --> OPEN
     SEQ --> POSCMD
     SEQ --> DONE
 
     SPLINE --> ROBOT
+    MOVEL --> ROBOT
     MOVEJ --> ROBOT
     OPEN --> GRIPPER
     POSCMD --> GRIPPER
@@ -93,14 +96,13 @@ sequenceDiagram
     Vision->>Vision: camera -> gripper -> base transform
     Vision->>Planner: /dsr01/curobo/pick_pose
 
-    Planner->>Gripper: open
-    Planner->>CuRobo: plan approach
-    CuRobo-->>Planner: joint trajectory
+    Planner->>CuRobo: plan pre-approach and validate grasp endpoint
+    CuRobo-->>Planner: safe pre-approach trajectory + validated grasp pose
     Planner->>Doosan: MoveSplineJoint
 
-    Planner->>CuRobo: plan grasp
-    CuRobo-->>Planner: joint trajectory
-    Planner->>Doosan: MoveSplineJoint
+    Planner->>Planner: stop and settle at pre-approach
+    Planner->>Doosan: MoveLine relative TOOL +Z at low speed
+    Planner->>Planner: stop and settle at grasp pose
     Planner->>Gripper: soft close position_cmd
 
     Planner->>CuRobo: plan retreat / safe transfer
@@ -115,3 +117,16 @@ sequenceDiagram
     Planner->>Doosan: return home
     Planner-->>Vision: /dsr01/curobo/pick_complete
 ```
+
+## Current Harvest Motion Notes
+
+2026-06-07 기준 최종 파지 접근은 hybrid 방식이다.
+
+- cuRobo는 pre-approach 경로와 grasp endpoint의 IK/collision/branch 안전성을 검증한다.
+- 실제 마지막 진입은 pre-approach에서 완전히 멈춘 뒤 Doosan `MoveLine`으로
+  TOOL `+Z` 방향 저속 직선 이동한다.
+- 현재 SW 실기에서 수평 정면 진입 방향은 확인했지만, 최종 진입 깊이가 부족해
+  실제 줄기 파지는 아직 성공하지 못했다.
+- `grasp OK`와 `pick_complete`는 실제 파지 성공을 의미하지 않는다.
+
+상세 기록: [harvest_motion_session_20260607.md](harvest_motion_session_20260607.md)

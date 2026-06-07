@@ -17,7 +17,7 @@ from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float64MultiArray, String, Empty, Int32
 from std_srvs.srv import Trigger
-from dsr_msgs2.srv import MoveSplineJoint, MoveJoint
+from dsr_msgs2.srv import MoveSplineJoint, MoveJoint, MoveLine
 
 from curobo.types.base import TensorDeviceType
 from curobo.types.robot import JointState as CuroboJointState, RobotConfig
@@ -28,26 +28,28 @@ from curobo.geom.types import WorldConfig, Cuboid, Sphere
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
 GRASP_OFFSET        = +0.030   # TCP↔berry 거리 (m) — 조정 시 extension sphere 벽 간섭 주의
-GRASP_RETRY_OFFSETS = [0.040, 0.050, 0.065, 0.080]
-GRASP_Z_BIAS        = +0.005   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
-RETREAT_OFFSET      = 0.36
+GRASP_RETRY_OFFSETS  = [0.040, 0.050, 0.065, 0.080]
+GRASP_Z_BIAS         = +0.005   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
+PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
+PRE_APPROACH_SETTLE_SEC = 1.0  # 자세/파지 위치 확정 후 완전 정지
+FINAL_APPROACH_VEL_MM_S = 20.0 # pre-approach → grasp TOOL +Z 저속 직선 진입
+FINAL_APPROACH_ACC_MM_S2 = 30.0
+FINAL_APPROACH_SETTLE_SEC = 0.5
+RETREAT_OFFSET       = 0.36
 RETREAT_UP_M        = 0.05     # retreat 시 Z 추가 (이웃 딸기 스침 방지)
 NEIGHBOR_SPHERE_RADIUS_M = 0.030
 
 GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
-WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]    # FK 실측 롤백 (commit 723938b) — 새 계산값이 SW 셀에서 IK 배위 불안정
-# (회전축, 각도°) — 정면 유지하되 아래에서위 제거, 위→아래/좌→우/우→좌 추가
-# X축: 위아래 pitch (음수=위에서아래), Z축: 좌우 yaw, Y축: jaw roll (접근축 기준 회전)
+WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]    # FK 실측값; 수평 강제값은 SW IK 실패로 롤백
+# (좌표계, 회전축, 각도°)
+# 위아래 pitch는 base-frame X축에서 pre-multiply해야 실제 접근축 elevation이 변한다.
+# local-frame X축 post-multiply는 -25°를 줘도 elevation이 14.7°→13.4°밖에 줄지 않는다.
 GRASP_QUAT_RETRY_VARIANTS: list = [
-    ([1, 0, 0],  0.0),   # 정면 (기본)
-    ([1, 0, 0], -15.0),  # 위에서 아래 (약)
-    ([0, 0, 1], -15.0),  # 좌 → 우
-    ([0, 0, 1], +15.0),  # 우 → 좌
-    ([1, 0, 0], -25.0),  # 위에서 아래 (강)
-    ([0, 0, 1], -25.0),  # 좌 → 우 (강)
-    ([0, 0, 1], +25.0),  # 우 → 좌 (강)
+    ("base",  [1, 0, 0], -14.7),  # 수평에 가장 가까운 자세
+    ("base",  [1, 0, 0], -10.0),  # 잔여 위 기울기 약 4.7°
+    ("base",  [1, 0, 0],  -5.0),  # 잔여 위 기울기 약 9.7°
 ]
 
 CARTESIAN_PLAN_MAX_ATTEMPTS = 2
@@ -234,15 +236,38 @@ class CuroboPlanner(Node):
         self.cli_movej = self.create_client(
             MoveJoint, "/dsr01/motion/move_joint",
             callback_group=self.service_cb_group)
+        self.cli_movel = self.create_client(
+            MoveLine, "/dsr01/motion/move_line",
+            callback_group=self.service_cb_group)
         self.cli_gripper_open = self.create_client(
             Trigger, "/dsr01/gripper/open", callback_group=self.service_cb_group)
         self.cli_gripper_close = self.create_client(
             Trigger, "/dsr01/gripper/close", callback_group=self.service_cb_group)
 
         self.get_logger().info("cuRobo Planner Ready!")
+        base_approach_dir = np.array(quat_rotate_vec(WALL_QUAT_WXYZ, [0.0, 0.0, 1.0]))
+        base_elevation_deg = float(np.degrees(np.arcsin(np.clip(base_approach_dir[2], -1.0, 1.0))))
         self.get_logger().info(
             f"  ENV_CUBOIDS={len(self.static_cuboids)}  "
             f"SELF_COLLISION={USE_CUROBO_SELF_COLLISION}")
+        self.get_logger().info(
+            f"  WALL_QUAT_WXYZ={WALL_QUAT_WXYZ} "
+            f"approach_dir={np.round(base_approach_dir, 4).tolist()} "
+            f"elevation={base_elevation_deg:+.1f}deg")
+        candidate_elevations = []
+        for quat_frame, axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
+            q_delta = quat_from_axis_angle(axis, np.deg2rad(quat_deg))
+            q_candidate = (
+                quat_multiply_wxyz(q_delta, WALL_QUAT_WXYZ)
+                if quat_frame == "base"
+                else quat_multiply_wxyz(WALL_QUAT_WXYZ, q_delta)
+            )
+            candidate_dir = np.array(quat_rotate_vec(q_candidate, [0.0, 0.0, 1.0]))
+            candidate_elevation = float(
+                np.degrees(np.arcsin(np.clip(candidate_dir[2], -1.0, 1.0))))
+            candidate_elevations.append(f"{quat_deg:+.1f}->{candidate_elevation:+.1f}deg")
+        self.get_logger().info(
+            "  allowed grasp pitch corrections/elevations: " + ", ".join(candidate_elevations))
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
 
@@ -623,6 +648,39 @@ class CuroboPlanner(Node):
             self.get_logger().error("Spline failed/timeout")
         return ok
 
+    def execute_tool_z_line(self, distance_m: float) -> bool:
+        """현재 TCP 자세를 유지하고 TOOL +Z 방향으로 저속 직선 진입."""
+        if not 0.02 <= distance_m <= PRE_APPROACH_OFFSET:
+            self.get_logger().error(
+                f"MoveLine rejected: final approach distance={distance_m*1000:.1f}mm")
+            return False
+        if not self.cli_movel.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error("MoveLine not available")
+            return False
+
+        req = MoveLine.Request()
+        req.pos = [0.0, 0.0, float(distance_m * 1000.0), 0.0, 0.0, 0.0]
+        req.vel = [FINAL_APPROACH_VEL_MM_S, 10.0]
+        req.acc = [FINAL_APPROACH_ACC_MM_S2, 20.0]
+        req.time = 0.0
+        req.radius = 0.0
+        req.ref = 1         # DR_TOOL
+        req.mode = 1        # DR_MV_MOD_REL
+        req.blend_type = 0
+        req.sync_type = 0   # SYNC: 완전히 도착한 뒤 응답
+
+        self.get_logger().info(
+            f"FINAL_APPROACH_STRAIGHT TOOL +Z {distance_m*1000:.1f}mm "
+            f"vel={FINAL_APPROACH_VEL_MM_S:.1f}mm/s")
+        future = self.cli_movel.call_async(req)
+        t0 = time.time()
+        while not future.done() and (time.time() - t0) < 30.0:
+            time.sleep(0.05)
+        ok = future.done() and future.result() and future.result().success
+        if not ok:
+            self.get_logger().error("Final approach MoveLine failed/timeout")
+        return ok
+
     def _nearest_equivalent_joints(self, base_joints_deg):
         """J4/J6를 현재 위치에서 가장 가까운 360° equivalent로 조정."""
         if self.current_joints is None:
@@ -740,45 +798,63 @@ class CuroboPlanner(Node):
             self.gripper_pos_pub.publish(msg)
             gripper_open_deadline = t_open + GRIPPER_APPROACH_WAIT_SEC
 
-        # 2. Grasp (cuRobo Cartesian)
+        # 2. Grasp (cuRobo Cartesian) — 2단계: pre-approach → grasp
+        # pre-approach: 줄기 앞 PRE_APPROACH_OFFSET에 먼저 정지
+        # grasp:        pre-approach에서 직선으로 파지 위치까지 진입
+        # → 줄기를 앞에서 통과하지 않고 정면에서 접근 보장
         n_offsets = len(grasp_retry_offsets)
         n_quats   = len(GRASP_QUAT_RETRY_VARIANTS)
         self.get_logger().info(
-            f"2 grasp (CuRobo) — trying {n_offsets} offsets × {n_quats} quats "
+            f"2 grasp (CuRobo 2-step) — trying {n_offsets} offsets × {n_quats} quats "
             f"| target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
             f"| start_J1={np.rad2deg(self.current_joints[0]):.1f}°")
-        ret = None
+        ret_pre   = None   # pre-approach plan
+        ret_grasp = None   # final grasp plan
         used_grasp_offset = None
         used_grasp_variant = None
         used_approach_dir = None
+        used_grasp_quat = None
         grasp_attempt = 0
         for grasp_offset in grasp_retry_offsets:
-            for axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
+            for quat_frame, axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
                 grasp_attempt += 1
-                q_retry = quat_multiply_wxyz(
-                    WALL_QUAT_WXYZ,
-                    quat_from_axis_angle(axis, np.deg2rad(quat_deg)),
-                )
-                # ee_link 목표 = 딸기에서 실제 그리퍼 접근축(Z축) 방향으로 후퇴
-                # WALL_UNIT이 아닌 q_retry 회전의 Z축을 사용해야 tilt variant 시
-                # TCP가 의도한 위치에 정확히 도달함
+                q_delta = quat_from_axis_angle(axis, np.deg2rad(quat_deg))
+                if quat_frame == "base":
+                    q_retry = quat_multiply_wxyz(q_delta, WALL_QUAT_WXYZ)
+                else:
+                    q_retry = quat_multiply_wxyz(WALL_QUAT_WXYZ, q_delta)
                 approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
+                # pre-approach: 줄기에서 PRE_APPROACH_OFFSET만큼 앞
+                ee_pre = straw - (PRE_APPROACH_OFFSET + GRIPPER_LEN) * approach_dir
+                r_pre = self.plan(self.current_joints, ee_pre.tolist(), q_retry,
+                                  num_ik_seeds=64)
+                if r_pre is None:
+                    continue
+                pre_joints = r_pre[0][-1].tolist()
+                # final grasp: pre-approach에서 grasp_offset까지 직선 접근
                 ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
-                ret = self.plan(self.current_joints, ee_g_try.tolist(), q_retry,
-                                num_ik_seeds=64)
-                if ret is not None:
-                    used_grasp_offset = grasp_offset
-                    used_grasp_variant = (axis, quat_deg)
-                    used_approach_dir = approach_dir
-                    break
-            if ret is not None:
+                r_grasp = self.plan(pre_joints, ee_g_try.tolist(), q_retry,
+                                    num_ik_seeds=32)
+                if r_grasp is None:
+                    continue
+                ret_pre   = r_pre
+                ret_grasp = r_grasp
+                used_grasp_offset = grasp_offset
+                used_grasp_variant = (quat_frame, axis, quat_deg)
+                used_approach_dir = approach_dir
+                used_grasp_quat = q_retry
+                break
+            if ret_pre is not None:
                 break
 
-        if ret is None:
+        if ret_pre is None:
             self.get_logger().error(
                 f"ABORT: grasp 전체 실패 — {grasp_attempt}개 후보 모두 reject "
                 f"(target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
                 f"start_J=[{', '.join(f'{np.rad2deg(v):.0f}' for v in self.current_joints)}]°)")
+            self.get_logger().warn(
+                "No grasp motion executed; robot remains at the taught scan pose. "
+                "The scan-pose gripper tilt is not the requested WALL_QUAT orientation.")
             self._clear_neighbor_obstacles()
             self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
@@ -789,31 +865,55 @@ class CuroboPlanner(Node):
         if remaining > 0:
             time.sleep(remaining)
 
-        if not self.execute_spline(*ret):
+        # pre-approach 실행
+        if not self.execute_spline(*ret_pre):
             self.get_logger().error(
-                f"ABORT: grasp spline 실행 실패 "
+                f"ABORT: pre-approach spline 실행 실패 "
                 f"(offset={used_grasp_offset:+.3f}m variant={used_grasp_variant})")
             self._clear_neighbor_obstacles()
             self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
             return
 
-        grasp_joints = ret[0][-1].tolist()
+        # pre-approach에서 완전히 멈춘 뒤, 확정된 자세 그대로 TOOL +Z 직선 진입.
+        # r_grasp는 endpoint IK/충돌/branch 검증용이며 실행 자체는 MoveLine이 담당한다.
+        final_approach_distance = PRE_APPROACH_OFFSET - used_grasp_offset
+        self.get_logger().info(
+            f"PRE_APPROACH_REACHED — target locked, settling {PRE_APPROACH_SETTLE_SEC:.1f}s "
+            f"before {final_approach_distance*1000:.1f}mm straight grasp advance")
+        time.sleep(PRE_APPROACH_SETTLE_SEC)
+        if not self.execute_tool_z_line(final_approach_distance):
+            self.get_logger().error(
+                f"ABORT: final straight grasp advance failed "
+                f"(offset={used_grasp_offset:+.3f}m variant={used_grasp_variant})")
+            self._clear_neighbor_obstacles()
+            self._reset_gripper()
+            self.pick_complete_pub.publish(Empty())
+            return
+
+        time.sleep(FINAL_APPROACH_SETTLE_SEC)
+        grasp_joints = (
+            list(self.current_joints)
+            if self.current_joints is not None
+            else ret_grasp[0][-1].tolist()
+        )
         self.get_logger().info(
             f"grasp OK — offset={used_grasp_offset:+.3f}m "
             f"variant={used_grasp_variant} "
+            f"approach_dir={np.round(used_approach_dir, 4).tolist()} "
+            f"elevation={np.degrees(np.arcsin(np.clip(used_approach_dir[2], -1.0, 1.0))):+.1f}deg "
             f"(attempt {grasp_attempt}/{n_offsets * n_quats})")
 
         # 3. 그리퍼 닫기
         self.get_logger().info("3 close gripper")
         self.call_trigger(self.cli_gripper_close)
-        time.sleep(1.5)
+        time.sleep(2.0)
 
         # 4. Retreat → HOME
         self.get_logger().info("4 retreat (CuRobo)")
         ee_r = (straw - (RETREAT_OFFSET + GRIPPER_LEN) * used_approach_dir
                 + np.array([0.0, 0.0, RETREAT_UP_M]))
-        ret = self.plan(grasp_joints, ee_r.tolist(), WALL_QUAT_WXYZ)
+        ret = self.plan(grasp_joints, ee_r.tolist(), used_grasp_quat)
         if ret is not None:
             self.execute_spline(*ret)
             retreat_joints = ret[0][-1].tolist()

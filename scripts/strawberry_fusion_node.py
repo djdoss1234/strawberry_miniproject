@@ -177,6 +177,9 @@ class StrawberryFusionNode(Node):
         self.declare_parameter("kp_conf_min",  0.40)   # keypoint visibility threshold
         self.declare_parameter("infer_every",  3)       # run inference every N camera frames
         self.declare_parameter("stable_hits_required", 4)
+        self.declare_parameter("target_position_window_size", 9)
+        self.declare_parameter("target_position_min_samples", 7)
+        self.declare_parameter("target_position_max_spread_m", 0.012)
         self.declare_parameter("track_match_distance_m", 0.035)
         self.declare_parameter("track_ttl_sec", 1.5)
         self.declare_parameter("publish_period_sec", 1.0)
@@ -192,6 +195,14 @@ class StrawberryFusionNode(Node):
         self._kp_min  = self.get_parameter("kp_conf_min").value
         self._infer_n = max(1, self.get_parameter("infer_every").value)
         self._stable_hits = max(1, int(self.get_parameter("stable_hits_required").value))
+        self._position_window_size = max(
+            3, int(self.get_parameter("target_position_window_size").value))
+        self._position_min_samples = min(
+            self._position_window_size,
+            max(3, int(self.get_parameter("target_position_min_samples").value)),
+        )
+        self._position_max_spread_m = float(
+            self.get_parameter("target_position_max_spread_m").value)
         self._track_match_dist = float(self.get_parameter("track_match_distance_m").value)
         self._track_ttl_sec = float(self.get_parameter("track_ttl_sec").value)
         self._publish_period_sec = float(self.get_parameter("publish_period_sec").value)
@@ -256,6 +267,10 @@ class StrawberryFusionNode(Node):
         self.timer = self.create_timer(1.0 / 30.0, self._loop)
         self.get_logger().info(
             "StrawberryFusionNode ready.  q=quit in display window")
+        self.get_logger().info(
+            f"Target stabilization: median window={self._position_window_size}, "
+            f"min_samples={self._position_min_samples}, "
+            f"max_spread={self._position_max_spread_m*1000:.0f}mm")
 
     def _update_track(self, pos_base: np.ndarray, quat_xyzw: np.ndarray):
         """Simple 3-D nearest-neighbor tracker to suppress frame flicker."""
@@ -281,22 +296,37 @@ class StrawberryFusionNode(Node):
             self._tracks[best_id] = {
                 "pos": pos_base.astype(float),
                 "quat": quat_xyzw.astype(float),
+                "position_history": [],
+                "position_spread_m": float("inf"),
                 "hits": 0,
                 "last_seen": now,
                 "last_pub": 0.0,
             }
 
         track = self._tracks[best_id]
-        alpha = 0.55
-        track["pos"] = alpha * pos_base + (1.0 - alpha) * track["pos"]
+        history = track["position_history"]
+        history.append(pos_base.astype(float))
+        del history[:-self._position_window_size]
+        history_array = np.asarray(history)
+        median_pos = np.median(history_array, axis=0)
+        track["pos"] = median_pos
+        track["position_spread_m"] = float(
+            np.max(np.linalg.norm(history_array - median_pos, axis=1)))
         track["quat"] = quat_xyzw.astype(float)
         track["hits"] += 1
         track["last_seen"] = now
         return best_id, track
 
+    def _track_is_stable(self, track) -> bool:
+        return (
+            track["hits"] >= self._stable_hits
+            and len(track["position_history"]) >= self._position_min_samples
+            and track["position_spread_m"] <= self._position_max_spread_m
+        )
+
     def _should_publish_track(self, track) -> bool:
         now = time.monotonic()
-        if track["hits"] < self._stable_hits:
+        if not self._track_is_stable(track):
             return False
         if now - track["last_pub"] < self._publish_period_sec:
             return False
@@ -306,7 +336,7 @@ class StrawberryFusionNode(Node):
     def _select_active_track(self, candidates):
         """Pick one stable target and hold it briefly to suppress target swaps."""
         now = time.monotonic()
-        candidates = [c for c in candidates if c["track"]["hits"] >= self._stable_hits]
+        candidates = [c for c in candidates if self._track_is_stable(c["track"])]
         if not candidates:
             if now - self._active_last_seen > self._target_lock_ttl_sec:
                 self._active_track_id = None
@@ -356,6 +386,11 @@ class StrawberryFusionNode(Node):
         pmsg.pose.orientation.z = float(track["quat"][2])
         pmsg.pose.orientation.w = float(track["quat"][3])
         self.pick_pub.publish(pmsg)
+        self.get_logger().info(
+            "Published stable pick target "
+            f"xyz=({track['pos'][0]:.3f},{track['pos'][1]:.3f},{track['pos'][2]:.3f})m "
+            f"samples={len(track['position_history'])} "
+            f"spread={track['position_spread_m']*1000:.1f}mm")
 
     # ── joint callback ────────────────────────────────────────────────────────
     def _joint_cb(self, msg: JointState):
@@ -653,7 +688,7 @@ class StrawberryFusionNode(Node):
                         continue
                     track_id, track = best_id, self._tracks[best_id]
 
-                stable = track["hits"] >= self._stable_hits
+                stable = self._track_is_stable(track)
                 if stable:
                     # Use image-center priority for the current view, but publish
                     # only one locked target after all candidates are processed.
@@ -669,7 +704,9 @@ class StrawberryFusionNode(Node):
                 gx, gy, gz = track["pos"]
                 label = "PICK" if stable else "WAIT"
                 cv2.putText(vis,
-                    f"{label}#{track_id} h={track['hits']} ({gx:.3f},{gy:.3f},{gz:.3f})",
+                    f"{label}#{track_id} h={track['hits']} "
+                    f"s={track['position_spread_m']*1000:.0f}mm "
+                    f"({gx:.3f},{gy:.3f},{gz:.3f})",
                     (int(pose_bbox[0]), int(pose_bbox[3]) + 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, COLOR_MATCH, 1)
 

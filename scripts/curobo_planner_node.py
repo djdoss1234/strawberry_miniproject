@@ -1089,7 +1089,7 @@ class CuroboPlanner(Node):
         """Marker-derived place. Release 승인 전에는 above에서 정지한다."""
         target = self._load_marker_place_target()
         if target is None:
-            return "failed", retreat_joints
+            return "skip", retreat_joints   # tray 없음/stale → soft skip, hold 없음
 
         self.get_logger().info(
             f"5 marker place slot={target['slot_index']} via overview/tray-view")
@@ -1440,7 +1440,15 @@ class CuroboPlanner(Node):
         if self._enable_marker_place and _allow_place:
             place_status, place_joints = self._execute_marker_place_after_retreat(
                 retreat_joints)
-            if place_status != "success":
+            if place_status == "success":
+                return_start_joints = place_joints
+            elif place_status == "skip":
+                # tray 없음/stale — place 생략, scan 복귀
+                self.get_logger().warn("PLACE_SKIPPED: tray unavailable; returning to scan")
+                self.runtime_log.log("place_skipped", reason="tray_unavailable",
+                                     grasp_result=grasp_result)
+            else:
+                # 로봇이 이미 움직인 뒤 실패 or preview hold → latch
                 self._clear_neighbor_obstacles()
                 self.runtime_log.log(
                     "pick_sequence_stopped",
@@ -1457,7 +1465,6 @@ class CuroboPlanner(Node):
                     "pick_complete not published, automatic scan paused")
                 self._hold_pick_sequence(f"marker_place_{place_status}")
                 return
-            return_start_joints = place_joints
 
         self.get_logger().info("7 return to pick-start scan pose")
         # 직선 retreat 또는 marker place 완료 후 이번 pick이 시작된 scan pose로

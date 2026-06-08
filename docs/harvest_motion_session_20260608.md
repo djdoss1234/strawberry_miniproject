@@ -560,3 +560,90 @@ ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
   -p enable_marker_place_sequence:=true \
   -p execute_marker_place_release:=true
 ```
+
+## VERIFY_GRASP / VERIFY_DETACH 구현 — 2026-06-08 저녁
+
+### 동기
+
+두 번의 실기에서 모션 시퀀스는 완료되었으나 실제 파지 여부를 확인할 수 없었다.
+
+```text
+run ba59d38c: 잎에 밀려 실제 파지 실패, 로그에는 grasp OK 기록
+run d7ae2a59: 줄기를 잡았지만 딸기가 분리되지 않음, 로그에는 grasp OK 기록
+```
+
+두 경우 모두 `MARKER_PLACE_FAILED`(tray 좌표 만료)로 pick이 중단되었지만,
+`grasp OK`가 실제 파지 성공이 아닌 자세 도달 이벤트임이 명확히 구분되지 않았다.
+
+### 구현 내용 (commit 3a35fa3)
+
+**C++: `gripper_service_node.cpp`**
+
+기존 `read_present_position()` 메서드를 ROS Trigger 서비스로 노출한다.
+
+```text
+서비스: /dsr01/gripper/read_position
+응답:   success=true, message=str(position)
+       position=-1 이면 가상 모드 또는 serial 오류
+```
+
+**Python: `curobo_planner_node.py`**
+
+```text
+GRASP_EMPTY_POSITION_THRESHOLD = 665
+GRASP_VERIFY_TIMEOUT_SEC       = 5.0
+```
+
+파지 분류 기준:
+
+| result_code | 조건 | 의미 |
+|---|---|---|
+| GRASP_EMPTY | pos >= 665 | jaw 완전 닫힘, 아무것도 없음 |
+| GRASP_CONTACT_DETECTED | 0 <= pos < 665 | jaw 중간 정지, 줄기 접촉 추정 |
+| GRASP_UNVERIFIED | pos = -1 또는 서비스 미응답 | 가상 모드 또는 판독 실패 |
+
+pick 시퀀스 변경점:
+
+```text
+grasp OK 로그 → GRASP_POSE_REACHED
+grasp_approach_complete JSONL 이벤트 → grasp_pose_reached
+gripper close (2.0s)
+ → VERIFY_GRASP (read_position 서비스 호출)
+   → verify_grasp JSONL 기록
+retreat (MoveLine TOOL -Z)
+ → VERIFY_DETACH (상태 기록; 센서 없음 → DETACH_UNVERIFIED)
+   → verify_detach JSONL 기록
+Place 게이트:
+  GRASP_CONTACT_DETECTED → place 허용
+  GRASP_EMPTY / GRASP_UNVERIFIED → place_gate_blocked JSONL, place 건너뜀
+```
+
+retreat는 grasp_result와 무관하게 항상 실행된다. 벽 앞에 멈춰 있으면 안 되기 때문이다.
+
+### 검증 상태
+
+```text
+Python syntax check:  passed
+colcon build:         passed (e0509_gripper_description)
+git diff --check:     clean
+Physical test:        pending
+```
+
+### 다음 실기 확인 항목
+
+1. close 직후 `VERIFY_GRASP` 로그와 `present_pos=` 값 확인
+2. 실제 줄기 파지 시 `GRASP_CONTACT_DETECTED` 나오는지 확인
+3. 빈 파지 시 `GRASP_EMPTY (pos=700)` 나오는지 확인
+4. `GRASP_EMPTY`에서 place 건너뛰고 scan 복귀하는지 확인
+5. 가상 모드(real_mode=false) → `GRASP_UNVERIFIED` 나오는지 확인
+6. `GRASP_EMPTY_POSITION_THRESHOLD=665` 적절성 — 실제 줄기 파지 시 pos값 측정 후 조정 필요
+
+### 임계값 조정 안내
+
+RH-P12-RN-A에서 줄기를 잡을 때 실제 위치(present_position)를 로그로 확인한 뒤,
+`GRASP_EMPTY_POSITION_THRESHOLD`를 조정한다.
+
+```text
+예: 줄기 파지 시 pos=620 관찰 → threshold를 650 정도로 낮출 수 있음
+    빈 파지 시 pos=700 → threshold 665 이상이면 GRASP_EMPTY 정상 판정
+```

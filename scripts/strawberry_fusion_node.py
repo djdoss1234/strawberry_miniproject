@@ -182,6 +182,7 @@ class StrawberryFusionNode(Node):
         self.declare_parameter("stem_segment_min_m", 0.005)
         self.declare_parameter("stem_segment_max_m", 0.100)
         self.declare_parameter("stem_total_max_m", 0.160)
+        self.declare_parameter("stem_grasp_offset_from_kp0_m", 0.010)
         self.declare_parameter("infer_every",  3)       # run inference every N camera frames
         self.declare_parameter("stable_hits_required", 4)
         self.declare_parameter("target_position_window_size", 9)
@@ -209,6 +210,8 @@ class StrawberryFusionNode(Node):
             self.get_parameter("stem_segment_max_m").value)
         self._stem_total_max_m = float(
             self.get_parameter("stem_total_max_m").value)
+        self._stem_grasp_offset_m = max(
+            0.0, float(self.get_parameter("stem_grasp_offset_from_kp0_m").value))
         self._infer_n = max(1, self.get_parameter("infer_every").value)
         self._stable_hits = max(1, int(self.get_parameter("stable_hits_required").value))
         self._position_window_size = max(
@@ -294,6 +297,9 @@ class StrawberryFusionNode(Node):
             f"all_keypoints={self._require_all_stem_kps}, "
             f"segment={self._stem_segment_min_m*1000:.0f}.."
             f"{self._stem_segment_max_m*1000:.0f}mm")
+        self.get_logger().info(
+            f"Stem grasp target: KP0 -> KP2 direction, "
+            f"offset up to {self._stem_grasp_offset_m*1000:.0f}mm")
         self.runtime_log.log(
             "node_start",
             pipeline_role="seg_pose_fusion_and_target_generation",
@@ -307,6 +313,7 @@ class StrawberryFusionNode(Node):
                 "stem_segment_min_m": self._stem_segment_min_m,
                 "stem_segment_max_m": self._stem_segment_max_m,
                 "stem_total_max_m": self._stem_total_max_m,
+                "stem_grasp_offset_from_kp0_m": self._stem_grasp_offset_m,
                 "infer_every": self._infer_n,
                 "stable_hits_required": self._stable_hits,
                 "target_position_window_size": self._position_window_size,
@@ -447,6 +454,7 @@ class StrawberryFusionNode(Node):
             f"xyz=({track['pos'][0]:.3f},{track['pos'][1]:.3f},{track['pos'][2]:.3f})m "
             f"samples={len(track['position_history'])} "
             f"spread={track['position_spread_m']*1000:.1f}mm "
+            f"stem_offset={track['quality'].get('grasp_offset_from_kp0_m', 0.0)*1000:.1f}mm "
             f"kp_conf={track['quality'].get('kp_conf', [])}")
 
     def _reject_target(self, reason: str, **data):
@@ -765,9 +773,6 @@ class StrawberryFusionNode(Node):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 220), 1)
                     continue
 
-                # Automatic pick target is always KP0. A KP1 fallback can move
-                # the gripper away from the fruit-adjacent stem and is unsafe.
-                grasp_pt = kp3d[0]
                 stem_vec = kp3d[2] - kp3d[0] if 2 in kp3d else None
 
                 segment_lengths = {}
@@ -798,6 +803,19 @@ class StrawberryFusionNode(Node):
                         )
                     continue
 
+                # Move from stem_base toward stem_tip instead of adding a
+                # base-frame Z bias. This follows diagonal stems and keeps the
+                # gripper centerline on the actual stem. Do not move beyond
+                # 80% of KP0->KP2 so the target remains fruit-adjacent.
+                kp0_to_stem_tip = kp3d[2] - kp3d[0]
+                kp0_to_stem_tip_len = float(np.linalg.norm(kp0_to_stem_tip))
+                grasp_step_m = min(
+                    self._stem_grasp_offset_m,
+                    0.8 * kp0_to_stem_tip_len,
+                )
+                grasp_direction = kp0_to_stem_tip / kp0_to_stem_tip_len
+                grasp_pt = kp3d[0] + grasp_step_m * grasp_direction
+
                 target_quality = {
                     "kp_conf": kp_conf,
                     "kp_pixels": [
@@ -809,6 +827,10 @@ class StrawberryFusionNode(Node):
                     "match_score": float(match["score"]),
                     "ripe_metrics": ripe_metrics,
                     "stem_segment_lengths_m": segment_lengths,
+                    "grasp_target_source": "kp0_toward_kp2",
+                    "grasp_offset_from_kp0_m": grasp_step_m,
+                    "grasp_direction_base": grasp_direction,
+                    "grasp_target_base_m": grasp_pt,
                 }
 
                 quat_xyzw = (stem_vec_to_quat_xyzw(stem_vec)

@@ -326,3 +326,31 @@ GRASP_Z_BIAS: +0.005m -> +0.015m
 다음 실기 검증에서는 줄기가 파츠 사이에 들어오는지, 꼭지/잎을 먼저 미는지,
 파지 후 과실이 이동하는지를 영상과 함께 수동 라벨링한다. 이 변경은 잎 geometry를
 collision world에 추가한 것이 아니므로 가려진 줄기에 대한 강제 접근 해결책은 아니다.
+
+## 단순 base Z 상승 실패와 줄기 방향 보정
+
+`GRASP_Z_BIAS=+15mm` 적용 실행에서는 로그상 목표가 실제로 상승했다.
+
+```text
+raw=(-351,672,451)mm
+grasp=(-351,672,466)mm
+z_bias=+15mm
+```
+
+하지만 물리적으로는 이전과 비슷하게 과실을 스쳤다. 원인은 “줄기 위쪽”을
+`base_link +Z`로만 해석한 것이다. 이번 target의 실제 줄기는 KP0에서 KP2로 갈 때
+X/Y/Z가 모두 변하는 대각선 방향이었다. 따라서 Z만 올리면 높이는 바뀌어도 그리퍼
+중심선이 줄기에서 옆으로 벗어날 수 있다.
+
+수정:
+
+```text
+old target = KP0 + [0, 0, 15mm]
+new target = KP0 + normalize(KP2 - KP0) * min(10mm, 0.8 * |KP2-KP0|)
+planner GRASP_Z_BIAS = 0
+```
+
+이제 fusion node가 전체 줄기 방향을 따라 KP0에서 최대 10mm 이동한 점을 publish하며,
+planner는 별도 base Z 보정을 중복 적용하지 않는다. JSONL의 target quality에
+`grasp_target_source`, `grasp_offset_from_kp0_m`, `grasp_direction_base`,
+`grasp_target_base_m`을 저장한다.

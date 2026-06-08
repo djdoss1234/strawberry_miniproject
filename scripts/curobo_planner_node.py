@@ -30,7 +30,6 @@ from runtime_jsonl_logger import RuntimeJsonlLogger
 
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
-GRASP_OFFSET        = +0.030   # TCP↔berry 거리 (m) — 조정 시 extension sphere 벽 간섭 주의
 GRASP_RETRY_OFFSETS  = [0.015, 0.030, 0.050, 0.070]
 GRASP_Z_BIAS         = 0.000    # fusion이 KP0→KP2 줄기 방향 보정을 적용하므로 중복 Z 보정 금지
 PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
@@ -45,7 +44,6 @@ NEIGHBOR_SPHERE_RADIUS_M = 0.030
 
 GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
-WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
 WALL_QUAT_WXYZ   = [0.497, -0.497, 0.503, 0.503]   # approach_dir = [0, 1, 0] 정확히 수직
 # 유도: [0.488, -0.506, 0.494, 0.512] (elevation 0°) 에 world-Z -2.06° 추가 보정
 # → approach_dir X 성분(-0.036) 제거, 130mm 직선 접근 시 횡방향 오차 0mm
@@ -60,9 +58,7 @@ CARTESIAN_PLAN_MAX_ATTEMPTS = 2
 CARTESIAN_PLAN_TIMEOUT_SEC  = 1.2
 DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 
-OPEN_GRIPPER_ON_PICK_START  = False  # 스캔 이동 중 이미 600으로 설정됨 → pick 시작 시 별도 동작 없음
-GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (0=완전열림, 700=완전닫힘) — 이웃 줄기 걸림 방지
-GRIPPER_APPROACH_WAIT_SEC   = 1.5  # 접근 포지션 완료 대기 (plan과 병렬)
+GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (스캔 이동 중 미리 설정됨)
 
 # ── 파지 검증 ─────────────────────────────────────────────────────────────────
 # RH-P12-RN-A: 0=fully open, 700=fully closed
@@ -290,28 +286,12 @@ class CuroboPlanner(Node):
         self.get_logger().info(f"Runtime JSONL: {self.runtime_log.path}")
         self.runtime_log.log(
             "node_start",
-            pipeline_role="motion_planning_and_execution",
-            environment_yaml=ENVIRONMENT_YAML,
-            environment_cuboids=[
-                {"name": c.name, "pose": c.pose, "dims": c.dims}
-                for c in self.static_cuboids
-            ],
-            parameters={
-                "grasp_retry_offsets_m": GRASP_RETRY_OFFSETS,
-                "grasp_z_bias_m": GRASP_Z_BIAS,
-                "pre_approach_offset_m": PRE_APPROACH_OFFSET,
-                "gripper_len_m": GRIPPER_LEN,
-                "wall_surface_y_m": WALL_SURFACE_Y_M,
-                "wall_quat_wxyz": WALL_QUAT_WXYZ,
-                "grasp_quat_retry_variants": GRASP_QUAT_RETRY_VARIANTS,
-                "operational_joint_limits_deg": OPERATIONAL_JOINT_LIMITS_DEG,
-                "enable_marker_place_sequence": self._enable_marker_place,
-                "execute_marker_place_release": self._execute_marker_place_release,
-                "tray_cells_json": self._tray_cells_json,
-                "marker_place_max_age_sec": self._marker_place_max_age_sec,
-                "marker_place_above_clearance_m": self._marker_place_above_clearance_m,
-            },
-            unmodeled_collision_classes=["leaf", "stem", "support_string"],
+            wall_quat_wxyz=WALL_QUAT_WXYZ,
+            grasp_retry_offsets_m=GRASP_RETRY_OFFSETS,
+            pre_approach_offset_m=PRE_APPROACH_OFFSET,
+            enable_marker_place=self._enable_marker_place,
+            execute_marker_place_release=self._execute_marker_place_release,
+            marker_place_max_age_sec=self._marker_place_max_age_sec,
         )
         base_approach_dir = np.array(quat_rotate_vec(WALL_QUAT_WXYZ, [0.0, 0.0, 1.0]))
         base_elevation_deg = float(np.degrees(np.arcsin(np.clip(base_approach_dir[2], -1.0, 1.0))))
@@ -324,21 +304,7 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"  WALL_QUAT_WXYZ={WALL_QUAT_WXYZ} "
             f"approach_dir={np.round(base_approach_dir, 4).tolist()} "
-            f"elevation={base_elevation_deg:+.1f}deg")
-        candidate_elevations = []
-        for quat_frame, axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
-            q_delta = quat_from_axis_angle(axis, np.deg2rad(quat_deg))
-            q_candidate = (
-                quat_multiply_wxyz(q_delta, WALL_QUAT_WXYZ)
-                if quat_frame == "base"
-                else quat_multiply_wxyz(WALL_QUAT_WXYZ, q_delta)
-            )
-            candidate_dir = np.array(quat_rotate_vec(q_candidate, [0.0, 0.0, 1.0]))
-            candidate_elevation = float(
-                np.degrees(np.arcsin(np.clip(candidate_dir[2], -1.0, 1.0))))
-            candidate_elevations.append(f"{quat_deg:+.1f}->{candidate_elevation:+.1f}deg")
-        self.get_logger().info(
-            "  allowed grasp pitch corrections/elevations: " + ", ".join(candidate_elevations))
+            f"elevation={base_elevation_deg:+.1f}deg  variants={len(GRASP_QUAT_RETRY_VARIANTS)}")
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
         self.get_logger().info(
@@ -513,22 +479,6 @@ class CuroboPlanner(Node):
             return [o for o in GRASP_RETRY_OFFSETS if o >= 0.050]
         return GRASP_RETRY_OFFSETS
 
-    def set_held_strawberry_collision(self, enabled):
-        if enabled:
-            spheres = torch.tensor(
-                [
-                    [0.0, 0.0, 0.00,  0.026],
-                    [0.0, 0.0, 0.025, 0.020],
-                    [0.0, 0.0, 0.00, -100.0],
-                    [0.0, 0.0, 0.00, -100.0],
-                ],
-                device="cuda:0", dtype=torch.float32,
-            )
-            self.motion_gen.attach_spheres_to_robot(
-                sphere_tensor=spheres, link_name="attached_object")
-        else:
-            self.motion_gen.detach_object_from_robot()
-
     def call_trigger(self, client):
         if not client.wait_for_service(timeout_sec=3.0):
             return
@@ -538,15 +488,7 @@ class CuroboPlanner(Node):
             time.sleep(0.1)
 
     def _verify_grasp(self):
-        """
-        그리퍼 실제 현재 위치를 읽어 파지 여부를 판정.
-        /dsr01/gripper/read_position 서비스 (Trigger) 호출 → message에 int 위치값.
-
-        Returns (result_code, present_position, reason):
-          GRASP_EMPTY          — pos >= GRASP_EMPTY_POSITION_THRESHOLD (jaw 완전 닫힘, 빈 파지)
-          GRASP_CONTACT_DETECTED — 0 <= pos < threshold (jaw 중간 정지, 줄기 접촉 추정)
-          GRASP_UNVERIFIED     — 서비스 미응답/가상 모드/파싱 실패
-        """
+        """read_position 서비스로 jaw 위치 판독 → GRASP_EMPTY/GRASP_CONTACT_DETECTED/GRASP_UNVERIFIED 반환."""
         if not self.cli_gripper_read_pos.wait_for_service(timeout_sec=0.5):
             return "GRASP_UNVERIFIED", -1, "read_position service unavailable"
         future = self.cli_gripper_read_pos.call_async(Trigger.Request())
@@ -1226,8 +1168,6 @@ class CuroboPlanner(Node):
             return
 
         grasp_retry_offsets = self.grasp_candidates_for_target(straw)
-        # ee_g는 루프 내에서 각 q_retry의 실제 접근 방향(그리퍼 Z축)으로 계산
-        # ee_r도 성공한 approach_dir을 이용해 grasp 이후 계산
 
         self.get_logger().info(
             f"=== PICK 딸기 raw=({raw_straw[0]*1000:.0f},{raw_straw[1]*1000:.0f},{raw_straw[2]*1000:.0f})mm "
@@ -1241,26 +1181,10 @@ class CuroboPlanner(Node):
             wall_y_clamped=bool(float(p.y) > WALL_SURFACE_Y_M),
         )
 
-        # 0. 이웃 딸기 장애물 등록
         self._register_neighbor_obstacles(straw)
+        self.motion_gen.detach_object_from_robot()
 
-        # 1. 그리퍼 pre-grasp 포지션 + 플랜 병렬 시작
-        # 완전 열기(0) 대신 GRIPPER_APPROACH_POS로만 열어 이웃 줄기 걸림 방지
-        self.set_held_strawberry_collision(False)
-        gripper_open_deadline = 0.0
-        if OPEN_GRIPPER_ON_PICK_START:
-            self.get_logger().info(
-                f"1 gripper pre-grasp pos={GRIPPER_APPROACH_POS} (parallel with planning)")
-            t_open = time.time()
-            msg = Int32()
-            msg.data = GRIPPER_APPROACH_POS
-            self.gripper_pos_pub.publish(msg)
-            gripper_open_deadline = t_open + GRIPPER_APPROACH_WAIT_SEC
-
-        # 2. Grasp (cuRobo Cartesian) — 2단계: pre-approach → grasp
-        # pre-approach: 줄기 앞 PRE_APPROACH_OFFSET에 먼저 정지
-        # grasp:        pre-approach에서 직선으로 파지 위치까지 진입
-        # → 줄기를 앞에서 통과하지 않고 정면에서 접근 보장
+        # 2. Grasp (cuRobo 2-step): pre-approach → grasp
         n_offsets = len(grasp_retry_offsets)
         n_quats   = len(GRASP_QUAT_RETRY_VARIANTS)
         self.get_logger().info(
@@ -1327,11 +1251,6 @@ class CuroboPlanner(Node):
             self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
             return
-
-        # 그리퍼 완전 개방 보장 (plan이 빨리 끝났으면 남은 시간만 대기)
-        remaining = gripper_open_deadline - time.time()
-        if remaining > 0:
-            time.sleep(remaining)
 
         # pre-approach 실행
         if not self.execute_spline(*ret_pre):

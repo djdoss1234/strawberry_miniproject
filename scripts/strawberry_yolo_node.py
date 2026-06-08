@@ -35,7 +35,7 @@ RIPE_RED_RATIO_MIN  = 0.28
 RIPE_STRONG_RED_RATIO_MIN = 0.12
 RIPE_SAT_MEAN_MIN = 105.0
 RIPE_STABLE_FRAMES  = 1
-UNRIPE_CLASS_KEYWORDS = ("unripe", "green", "immature")
+UNRIPE_CLASS_KEYWORDS = ("unripe", "green", "immature", "sick")
 RED_HSV_RANGES = (
     # 시연용 중간값: 너무 옅은 핑크는 줄이되 정상 빨간 딸기는 통과시킨다.
     (np.array([0, 90, 50], dtype=np.uint8), np.array([12, 255, 255], dtype=np.uint8)),
@@ -46,9 +46,7 @@ STRONG_RED_HSV_RANGES = (
     (np.array([168, 120, 60], dtype=np.uint8), np.array([179, 255, 255], dtype=np.uint8)),
 )
 
-MODEL_PATH = os.path.expanduser(
-    "~/doosan_ws/src/e0509_gripper_description/models/best.pt"
-)
+MODEL_PATH = os.path.expanduser("~/Downloads/best_box.pt")
 CALIB_NPZ = os.path.expanduser(
     "~/doosan_ws/src/e0509_gripper_description/config/calibration_eye_in_hand_1.npz"
 )

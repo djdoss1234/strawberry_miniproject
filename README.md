@@ -13,9 +13,10 @@ Intel RealSense RGB-D (eye-in-hand)
   -> red-surface depth estimation
   -> hand-eye calibration + E0509 forward kinematics
   -> /dsr01/curobo/pick_pose
-  -> cuRobo pre-approach/grasp endpoint/retreat planning
+  -> cuRobo pre-approach/grasp endpoint validation
   -> stop at pre-approach
   -> Doosan MoveLine TOOL +Z low-speed final grasp advance
+  -> gripper close -> Doosan MoveLine TOOL -Z straight reverse retreat
   -> Doosan MoveSplineJoint / MoveJoint hybrid execution
   -> RH-P12-RN-A soft close
   -> taught egg-tray slot placement
@@ -42,8 +43,9 @@ Intel RealSense RGB-D (eye-in-hand)
 - bbox 중심값 대신 빨간 표면 pixel depth를 우선하는 3D target 추정
 - eye-in-hand calibration과 현재 joint FK를 이용한 `base_link` 좌표 변환
 - target lock, EMA tracking, manual/auto pick publish, JSONL/image experiment logging
-- cuRobo 기반 pre-approach, grasp endpoint 검증, retreat 및 transfer 경로 계획
+- cuRobo 기반 pre-approach, grasp endpoint 검증 및 안전 거리 확보 후 transfer 경로 계획
 - pre-approach 정지 후 Doosan `MoveLine` TOOL `+Z` 저속 직선 파지 진입
+- 파지 후 동일 거리를 Doosan `MoveLine` TOOL `-Z`로 역주행하여 안전하게 후퇴
 - cuRobo trajectory를 Doosan `MoveSplineJoint` 실행 명령으로 연결
 - 그리퍼 압상을 줄이기 위한 단계적 position soft close
 - 계란판 slot0~2의 `above`/`release` pose teaching 및 place 실행
@@ -102,7 +104,7 @@ Intel RealSense RGB-D (eye-in-hand)
 | `/dsr01/joint_states` | current robot joint state |
 | `/dsr01/curobo/pick_pose` | strawberry target in `base_link` |
 | `/dsr01/motion/move_spline_joint` | execution of planned trajectory |
-| `/dsr01/motion/move_line` | stopped pre-approach에서 TOOL `+Z` 최종 직선 진입 |
+| `/dsr01/motion/move_line` | TOOL `+Z` 최종 직선 진입 및 TOOL `-Z` 동일 경로 후퇴 |
 | `/dsr01/motion/move_joint` | fixed pose / demo short motion execution |
 | `/dsr01/gripper/open` | open gripper |
 | `/dsr01/gripper/position_cmd` | stepwise soft-close position command |

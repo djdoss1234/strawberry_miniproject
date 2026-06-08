@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """cuRobo Motion Planner Node for Doosan E0509
 
-Pick sequence: open → grasp(CuRobo) → close → retreat(CuRobo) → pick_complete
+Pick sequence: pre-approach(CuRobo) → straight grasp(MoveLine) → close
+               → straight reverse retreat(MoveLine) → overview → pick_complete
 """
 
 import os
@@ -35,8 +36,7 @@ PRE_APPROACH_SETTLE_SEC = 1.0  # 자세/파지 위치 확정 후 완전 정지
 FINAL_APPROACH_VEL_MM_S = 20.0 # pre-approach → grasp TOOL +Z 저속 직선 진입
 FINAL_APPROACH_ACC_MM_S2 = 30.0
 FINAL_APPROACH_SETTLE_SEC = 0.5
-RETREAT_OFFSET       = 0.36
-RETREAT_UP_M        = 0.05     # retreat 시 Z 추가 (이웃 딸기 스침 방지)
+STRAIGHT_RETREAT_SETTLE_SEC = 0.5
 NEIGHBOR_SPHERE_RADIUS_M = 0.030
 
 GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
@@ -648,11 +648,11 @@ class CuroboPlanner(Node):
             self.get_logger().error("Spline failed/timeout")
         return ok
 
-    def execute_tool_z_line(self, distance_m: float) -> bool:
-        """현재 TCP 자세를 유지하고 TOOL +Z 방향으로 저속 직선 진입."""
-        if not 0.02 <= distance_m <= PRE_APPROACH_OFFSET:
+    def execute_tool_z_line(self, distance_m: float, motion_label="FINAL_APPROACH_STRAIGHT") -> bool:
+        """현재 TCP 자세를 유지하고 TOOL Z축 방향으로 저속 직선 이동."""
+        if not 0.02 <= abs(distance_m) <= PRE_APPROACH_OFFSET:
             self.get_logger().error(
-                f"MoveLine rejected: final approach distance={distance_m*1000:.1f}mm")
+                f"MoveLine rejected: {motion_label} distance={distance_m*1000:.1f}mm")
             return False
         if not self.cli_movel.wait_for_service(timeout_sec=3.0):
             self.get_logger().error("MoveLine not available")
@@ -670,7 +670,8 @@ class CuroboPlanner(Node):
         req.sync_type = 0   # SYNC: 완전히 도착한 뒤 응답
 
         self.get_logger().info(
-            f"FINAL_APPROACH_STRAIGHT TOOL +Z {distance_m*1000:.1f}mm "
+            f"{motion_label} TOOL {'+Z' if distance_m > 0 else '-Z'} "
+            f"{abs(distance_m)*1000:.1f}mm "
             f"vel={FINAL_APPROACH_VEL_MM_S:.1f}mm/s")
         future = self.cli_movel.call_async(req)
         t0 = time.time()
@@ -678,7 +679,7 @@ class CuroboPlanner(Node):
             time.sleep(0.05)
         ok = future.done() and future.result() and future.result().success
         if not ok:
-            self.get_logger().error("Final approach MoveLine failed/timeout")
+            self.get_logger().error(f"{motion_label} MoveLine failed/timeout")
         return ok
 
     def _nearest_equivalent_joints(self, base_joints_deg):
@@ -813,7 +814,6 @@ class CuroboPlanner(Node):
         used_grasp_offset = None
         used_grasp_variant = None
         used_approach_dir = None
-        used_grasp_quat = None
         grasp_attempt = 0
         for grasp_offset in grasp_retry_offsets:
             for quat_frame, axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
@@ -842,7 +842,6 @@ class CuroboPlanner(Node):
                 used_grasp_offset = grasp_offset
                 used_grasp_variant = (quat_frame, axis, quat_deg)
                 used_approach_dir = approach_dir
-                used_grasp_quat = q_retry
                 break
             if ret_pre is not None:
                 break
@@ -909,32 +908,33 @@ class CuroboPlanner(Node):
         self.call_trigger(self.cli_gripper_close)
         time.sleep(2.0)
 
-        # 4. Retreat → HOME
-        self.get_logger().info("4 retreat (CuRobo)")
-        ee_r = (straw - (RETREAT_OFFSET + GRIPPER_LEN) * used_approach_dir
-                + np.array([0.0, 0.0, RETREAT_UP_M]))
-        ret = self.plan(grasp_joints, ee_r.tolist(), used_grasp_quat)
-        if ret is not None:
-            self.execute_spline(*ret)
-            retreat_joints = ret[0][-1].tolist()
-            self.get_logger().info("4b overview after retreat (swing check off)")
-            # overview_joints_near_current(): J4/J6를 현재 위치 기준 가장 가까운
-            # 360° 등가로 선택 → retreat 후 J4=-87°에서 175°(263° 스윙) 대신
-            # -184°(94° 스윙)으로 이동
-            ok, _ = self.plan_to_fixed_joints_pose(
-                retreat_joints, self.overview_joints_near_current(), "overview after retreat",
-                skip_swing_check=True)
-            if not ok:
-                self.get_logger().warn("overview after retreat failed — MoveJoint direct")
-                self.movej_direct(self.overview_joints_near_current())
-        else:
-            self.get_logger().warn("Retreat plan failed — overview 직행")
-            ok, _ = self.plan_to_fixed_joints_pose(
-                grasp_joints, self.overview_joints_near_current(), "overview after retreat fail",
-                skip_swing_check=True)
-            if not ok:
-                self.get_logger().error("CuRobo overview failed — MoveJoint direct")
-                self.movej_direct(self.overview_joints_near_current())
+        # 4. 파지 진입 경로를 동일 자세로 역주행해 먼저 벽/과실에서 이탈한다.
+        # 새 Cartesian retreat 목표를 다시 IK로 풀면 J1 반대 branch를 선택할 수 있다.
+        self.get_logger().info(
+            f"4 straight reverse retreat — retracing {final_approach_distance*1000:.1f}mm")
+        if not self.execute_tool_z_line(
+                -final_approach_distance, motion_label="RETREAT_STRAIGHT_REVERSE"):
+            self.get_logger().error(
+                "ABORT: straight reverse retreat failed — holding current pose; "
+                "overview motion blocked")
+            self._clear_neighbor_obstacles()
+            self.pick_complete_pub.publish(Empty())
+            return
+
+        time.sleep(STRAIGHT_RETREAT_SETTLE_SEC)
+        retreat_joints = (
+            list(self.current_joints)
+            if self.current_joints is not None
+            else grasp_joints
+        )
+        self.get_logger().info("4b overview after straight reverse retreat")
+        # 직선으로 안전 거리를 확보한 뒤에만 overview 이동을 허용한다.
+        ok, _ = self.plan_to_fixed_joints_pose(
+            retreat_joints, self.overview_joints_near_current(), "overview after retreat",
+            skip_swing_check=True)
+        if not ok:
+            self.get_logger().warn("overview after retreat failed — MoveJoint direct")
+            self.movej_direct(self.overview_joints_near_current())
 
         self._clear_neighbor_obstacles()
         self._reset_gripper()  # 다음 파지를 위해 approach 위치(600)로 복귀

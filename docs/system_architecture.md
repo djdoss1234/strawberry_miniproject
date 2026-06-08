@@ -22,15 +22,15 @@ flowchart LR
     subgraph PLANNING["Planning & Sequencing Node<br/>scripts/curobo_planner_node.py"]
         STATE["/dsr01/joint_states<br/>current joints"]
         WORLD["cuRobo world model<br/>whiteboard / demo collision setup"]
-        CUROBO["cuRobo MotionGen<br/>pre-approach / grasp endpoint validation / retreat"]
-        SEQ["Harvest sequence<br/>pre-approach -> stop -> straight advance -> close -> retreat"]
+        CUROBO["cuRobo MotionGen<br/>pre-approach / grasp endpoint validation / post-retreat transfer"]
+        SEQ["Harvest sequence<br/>pre-approach -> stop -> straight advance -> close -> straight reverse retreat"]
         SLOTS["config/place_slots.yaml<br/>slot above / release joints"]
         SAFETY["Safety heuristics<br/>J1 branch check / left-safe transfer / offsets"]
     end
 
     subgraph EXEC["Robot Execution"]
         SPLINE["Doosan MoveSplineJoint<br/>/dsr01/motion/move_spline_joint"]
-        MOVEL["Doosan MoveLine<br/>/dsr01/motion/move_line<br/>slow TOOL +Z final grasp advance"]
+        MOVEL["Doosan MoveLine<br/>/dsr01/motion/move_line<br/>TOOL +Z advance / TOOL -Z reverse retreat"]
         MOVEJ["Doosan MoveJoint<br/>/dsr01/motion/move_joint<br/>short place/home moves"]
         OPEN["/dsr01/gripper/open"]
         POSCMD["/dsr01/gripper/position_cmd<br/>soft close steps"]
@@ -105,9 +105,9 @@ sequenceDiagram
     Planner->>Planner: stop and settle at grasp pose
     Planner->>Gripper: soft close position_cmd
 
-    Planner->>CuRobo: plan retreat / safe transfer
+    Planner->>Doosan: MoveLine relative TOOL -Z, retrace final approach
+    Planner->>CuRobo: plan safe transfer after straight retreat
     CuRobo-->>Planner: joint trajectory
-    Planner->>Doosan: MoveSplineJoint
 
     Planner->>Planner: select place slot
     Planner->>CuRobo: plan to slot above
@@ -125,6 +125,9 @@ sequenceDiagram
 - cuRobo는 pre-approach 경로와 grasp endpoint의 IK/collision/branch 안전성을 검증한다.
 - 실제 마지막 진입은 pre-approach에서 완전히 멈춘 뒤 Doosan `MoveLine`으로
   TOOL `+Z` 방향 저속 직선 이동한다.
+- 파지 후에는 새로운 Cartesian retreat IK를 풀지 않고, 실제 진입 거리만큼
+  TOOL `-Z` 방향으로 동일 경로를 역주행한다. 역주행 실패 시 overview 이동을
+  차단하여 벽 근처에서 예기치 않은 큰 관절 회전이 발생하지 않도록 한다.
 - 현재 SW 실기에서 수평 정면 진입 방향은 확인했지만, 최종 진입 깊이가 부족해
   실제 줄기 파지는 아직 성공하지 못했다.
 - `grasp OK`와 `pick_complete`는 실제 파지 성공을 의미하지 않는다.

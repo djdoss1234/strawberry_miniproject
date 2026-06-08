@@ -47,7 +47,7 @@ pre-approach
 
 - 직선 역주행이 실패하면 overview 직행을 금지한다.
 - 실패 시 현재 자세와 gripper close 상태를 유지한다.
-- overview 이동은 직선 역주행 성공 후에만 허용한다.
+- pick 시작 scan pose 복귀는 직선 역주행 성공 후에만 허용한다.
 - J1/J4/J6 operational limit 및 swing 검사는 유지한다.
 
 ## 검증 상태
@@ -66,7 +66,7 @@ Straight reverse retreat physical validation: passed
 FINAL_APPROACH_STRAIGHT TOOL +Z
 3 close gripper
 RETREAT_STRAIGHT_REVERSE TOOL -Z
-4b overview after straight reverse retreat
+4b return to pick-start scan pose after straight reverse retreat
 ```
 
 남은 딸기 시도에서는 retreat까지 정상 완료했지만, 목표 줄기보다 옆으로 접근하여
@@ -120,5 +120,32 @@ Fusion stabilization physical validation: pending
    ```
 
 5. 그리퍼 방향과 관절 branch가 유지된 채 진입 경로를 그대로 빠져나오는지 확인한다.
-6. 직선 후퇴가 완료된 뒤에만 overview로 이동하는지 확인한다.
+6. 직선 후퇴가 완료된 뒤에만 pick 시작 scan pose로 복귀하는지 확인한다.
 7. 실제 줄기 파지 여부는 `PICK COMPLETE`가 아니라 영상/사람 관찰로 별도 기록한다.
+
+## 같은 셀 연속 수확 시작 자세 수정
+
+SW 첫 딸기 수확 후 남은 딸기를 시도했을 때, planner 시작 자세가 SW scan pose가
+아니라 overview 자세였다.
+
+```text
+target=(-349,672,463)mm
+start_J=[88, -94, 130, 176, -31, 93]deg
+Cartesian plan rejected: J2 swing 96.3~102.8deg > 90.0deg
+```
+
+이는 목표를 빗겨간 것이 아니라 모든 후보가 실행 전에 거부되어 로봇이 움직이지 않은
+상황이다. 원인은 planner가 첫 pick 후 overview로 복귀한 뒤, scan executor가 같은
+SW 셀의 다음 target을 즉시 전달한 구조적 불일치였다.
+
+수정 후:
+
+```text
+각 pick 시작 시 현재 cell scan joints 저장
+ -> 직선 접근 / close / 직선 역주행
+ -> 저장한 pick-start scan pose로 복귀
+ -> pick_complete
+ -> scan executor가 같은 셀의 다음 target 전달
+```
+
+셀 간 이동 및 전체 순회 종료 후 overview 복귀는 scan executor가 담당한다.

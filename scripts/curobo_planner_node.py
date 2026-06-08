@@ -2,7 +2,7 @@
 """cuRobo Motion Planner Node for Doosan E0509
 
 Pick sequence: pre-approach(CuRobo) → straight grasp(MoveLine) → close
-               → straight reverse retreat(MoveLine) → overview → pick_complete
+               → straight reverse retreat(MoveLine) → pick-start scan pose → pick_complete
 """
 
 import os
@@ -903,6 +903,9 @@ class CuroboPlanner(Node):
 
     def _pick(self, msg: PoseStamped):
         p = msg.pose.position
+        # 같은 셀의 다음 target을 계속 처리할 수 있도록 이번 pick이 시작된
+        # taught scan pose를 저장한다. overview 복귀는 scan_executor가 담당한다.
+        pick_start_joints = list(self.current_joints)
         self.runtime_log.log(
             "pick_sequence_start",
             input_frame=msg.header.frame_id,
@@ -913,7 +916,7 @@ class CuroboPlanner(Node):
                 msg.pose.orientation.z,
                 msg.pose.orientation.w,
             ],
-            start_joints_rad=self.current_joints,
+            start_joints_rad=pick_start_joints,
         )
 
         # Y 클램핑: berry는 벽 표면보다 뒤에 있을 수 없음 (FK drift 보정)
@@ -1102,14 +1105,19 @@ class CuroboPlanner(Node):
             if self.current_joints is not None
             else grasp_joints
         )
-        self.get_logger().info("4b overview after straight reverse retreat")
-        # 직선으로 안전 거리를 확보한 뒤에만 overview 이동을 허용한다.
+        self.get_logger().info("4b return to pick-start scan pose after straight reverse retreat")
+        # 직선으로 안전 거리를 확보한 뒤 이번 pick이 시작된 scan pose로 복귀한다.
+        # scan_executor는 같은 셀의 다음 target을 이어서 전달하며, 셀 이동 및
+        # 최종 overview 복귀는 scan_executor가 담당한다.
+        pick_start_joints_deg = np.rad2deg(pick_start_joints).tolist()
+        pick_start_joints_deg = self._nearest_equivalent_joints(pick_start_joints_deg)
         ok, _ = self.plan_to_fixed_joints_pose(
-            retreat_joints, self.overview_joints_near_current(), "overview after retreat",
+            retreat_joints, pick_start_joints_deg, "pick-start scan pose after retreat",
             skip_swing_check=True)
         if not ok:
-            self.get_logger().warn("overview after retreat failed — MoveJoint direct")
-            self.movej_direct(self.overview_joints_near_current())
+            self.get_logger().warn(
+                "pick-start scan pose after retreat failed — MoveJoint direct")
+            self.movej_direct(pick_start_joints_deg)
 
         self._clear_neighbor_obstacles()
         self._reset_gripper()  # 다음 파지를 위해 approach 위치(600)로 복귀
@@ -1117,6 +1125,7 @@ class CuroboPlanner(Node):
         self.runtime_log.log(
             "pick_sequence_complete",
             result_code="SEQUENCE_COMPLETE_UNVERIFIED",
+            return_pose="pick_start_scan_pose",
             current_joints_rad=self.current_joints,
         )
         self.get_logger().info("=== PICK COMPLETE ===")

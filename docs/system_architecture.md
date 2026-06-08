@@ -106,7 +106,7 @@ sequenceDiagram
     Planner->>Gripper: soft close position_cmd
 
     Planner->>Doosan: MoveLine relative TOOL -Z, retrace final approach
-    Planner->>CuRobo: plan safe transfer after straight retreat
+    Planner->>CuRobo: plan return to pick-start cell scan pose after straight retreat
     CuRobo-->>Planner: joint trajectory
 
     Planner->>Planner: select place slot

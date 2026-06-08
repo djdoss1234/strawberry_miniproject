@@ -46,9 +46,10 @@ NEIGHBOR_SPHERE_RADIUS_M = 0.030
 GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
-WALL_QUAT_WXYZ   = [0.488, -0.506, 0.494, 0.512]   # FK 실측값에 base-X -14.7° pre-multiply 보정 → elevation ≈ 0°
-# 원본: [0.548415, -0.439294, 0.424628, 0.570923] → approach_dir Z=+0.254 (+14.7° 위 기울기)
-# 보정: approach_dir ≈ [-0.036, 1.000, 0.000] (수평 정면)  롤백: 위 원본값으로 교체
+WALL_QUAT_WXYZ   = [0.497, -0.497, 0.503, 0.503]   # approach_dir = [0, 1, 0] 정확히 수직
+# 유도: [0.488, -0.506, 0.494, 0.512] (elevation 0°) 에 world-Z -2.06° 추가 보정
+# → approach_dir X 성분(-0.036) 제거, 130mm 직선 접근 시 횡방향 오차 0mm
+# 롤백: [0.548415, -0.439294, 0.424628, 0.570923] (원본 측정값)
 GRASP_QUAT_RETRY_VARIANTS: list = [
     ("base",  [1, 0, 0],   0.0),  # 수평 정면 (base quat 그대로)
     ("base",  [1, 0, 0],  -5.0),  # 5° 아래
@@ -230,7 +231,7 @@ class CuroboPlanner(Node):
         self.declare_parameter("enable_marker_place_sequence", False)
         self.declare_parameter("execute_marker_place_release", False)
         self.declare_parameter("tray_cells_json", "")
-        self.declare_parameter("marker_place_max_age_sec", 300.0)
+        self.declare_parameter("marker_place_max_age_sec", 3600.0)
         self.declare_parameter("marker_place_above_clearance_m", 0.100)
         self._enable_marker_place = bool(
             self.get_parameter("enable_marker_place_sequence").value)
@@ -507,6 +508,9 @@ class CuroboPlanner(Node):
     def grasp_candidates_for_target(self, straw):
         if straw[0] > 0.25:
             return [-0.03, 0.0]
+        if straw[0] < -0.30:
+            # 실기 관찰: x < -300mm 대상은 offset 0.015/0.030 IK 항상 실패 → 스킵으로 ~10s 절약
+            return [o for o in GRASP_RETRY_OFFSETS if o >= 0.050]
         return GRASP_RETRY_OFFSETS
 
     def set_held_strawberry_collision(self, enabled):
@@ -1281,12 +1285,18 @@ class CuroboPlanner(Node):
             approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
             ee_pre = straw - (PRE_APPROACH_OFFSET + GRIPPER_LEN) * approach_dir
             r_pre_for_variant = self.plan(
-                self.current_joints, ee_pre.tolist(), q_retry, num_ik_seeds=64
+                self.current_joints, ee_pre.tolist(), q_retry, num_ik_seeds=96
             )
             if r_pre_for_variant is None:
                 grasp_attempt += len(grasp_retry_offsets)
                 continue
             pre_joints = r_pre_for_variant[0][-1].tolist()
+            pre_j2_deg = float(np.rad2deg(pre_joints[1]))
+            pre_j5_deg = float(np.rad2deg(pre_joints[4]))
+            elbow_tag = "ELBOW_UP" if pre_j2_deg > 5.0 else "elbow_dn"
+            self.get_logger().info(
+                f"  pre-approach IK variant=({quat_frame},{axis},{quat_deg:.0f}°) "
+                f"J2={pre_j2_deg:+.1f}° J5={pre_j5_deg:+.1f}° [{elbow_tag}]")
 
             for grasp_offset in grasp_retry_offsets:
                 grasp_attempt += 1

@@ -160,6 +160,7 @@ ee_retreat  = straw - (RETREAT_OFFSET + GRIPPER_LEN) * WALL_UNIT
 | `GRASP_RETRY_OFFSETS` | -0.05, -0.04, -0.03, 0.0 m | 파지 깊이 후보 |
 | `RETREAT_OFFSET` | 0.36 m | place 이송 전에 충분히 빠짐 |
 | `stem_grasp_offset_from_kp0_m` | +0.010 m | KP0에서 KP2 전체 줄기 방향으로 최대 10mm 이동한 파지 목표 |
+| `grasp_target_base_z_trim_m` | +0.010 m | 줄기 방향 target 생성 후 물리적으로 base +Z 10mm 추가 |
 | `GRASP_Z_BIAS` | 0.000 m | fusion 줄기 방향 보정과 중복되지 않도록 base Z 보정 비활성화 |
 | `GRIPPER_LEN` | 0.160 m | ee link에서 TCP까지의 거리 |
 

@@ -183,6 +183,7 @@ class StrawberryFusionNode(Node):
         self.declare_parameter("stem_segment_max_m", 0.100)
         self.declare_parameter("stem_total_max_m", 0.160)
         self.declare_parameter("stem_grasp_offset_from_kp0_m", 0.010)
+        self.declare_parameter("grasp_target_base_z_trim_m", 0.010)
         self.declare_parameter("infer_every",  3)       # run inference every N camera frames
         self.declare_parameter("stable_hits_required", 4)
         self.declare_parameter("target_position_window_size", 9)
@@ -212,6 +213,8 @@ class StrawberryFusionNode(Node):
             self.get_parameter("stem_total_max_m").value)
         self._stem_grasp_offset_m = max(
             0.0, float(self.get_parameter("stem_grasp_offset_from_kp0_m").value))
+        self._grasp_target_base_z_trim_m = float(
+            self.get_parameter("grasp_target_base_z_trim_m").value)
         self._infer_n = max(1, self.get_parameter("infer_every").value)
         self._stable_hits = max(1, int(self.get_parameter("stable_hits_required").value))
         self._position_window_size = max(
@@ -299,7 +302,8 @@ class StrawberryFusionNode(Node):
             f"{self._stem_segment_max_m*1000:.0f}mm")
         self.get_logger().info(
             f"Stem grasp target: KP0 -> KP2 direction, "
-            f"offset up to {self._stem_grasp_offset_m*1000:.0f}mm")
+            f"offset up to {self._stem_grasp_offset_m*1000:.0f}mm, "
+            f"base-Z trim={self._grasp_target_base_z_trim_m*1000:+.0f}mm")
         self.runtime_log.log(
             "node_start",
             pipeline_role="seg_pose_fusion_and_target_generation",
@@ -314,6 +318,7 @@ class StrawberryFusionNode(Node):
                 "stem_segment_max_m": self._stem_segment_max_m,
                 "stem_total_max_m": self._stem_total_max_m,
                 "stem_grasp_offset_from_kp0_m": self._stem_grasp_offset_m,
+                "grasp_target_base_z_trim_m": self._grasp_target_base_z_trim_m,
                 "infer_every": self._infer_n,
                 "stable_hits_required": self._stable_hits,
                 "target_position_window_size": self._position_window_size,
@@ -812,6 +817,7 @@ class StrawberryFusionNode(Node):
                 )
                 grasp_direction = kp0_to_stem_tip / kp0_to_stem_tip_len
                 grasp_pt = kp3d[0] + grasp_step_m * grasp_direction
+                grasp_pt[2] += self._grasp_target_base_z_trim_m
 
                 target_quality = {
                     "kp_conf": kp_conf,
@@ -824,9 +830,10 @@ class StrawberryFusionNode(Node):
                     "match_score": float(match["score"]),
                     "ripe_metrics": ripe_metrics,
                     "stem_segment_lengths_m": segment_lengths,
-                    "grasp_target_source": "kp0_toward_kp2",
+                    "grasp_target_source": "kp0_toward_kp2_plus_base_z_trim",
                     "grasp_offset_from_kp0_m": grasp_step_m,
                     "grasp_direction_base": grasp_direction,
+                    "grasp_target_base_z_trim_m": self._grasp_target_base_z_trim_m,
                     "grasp_target_base_m": grasp_pt,
                 }
 

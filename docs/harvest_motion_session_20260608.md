@@ -402,3 +402,27 @@ KP0/KP1은 줄기 쪽 점이므로 마스크 밖에 있는 것이 정상이다. 
 따라서 다음 단일 SW 검증의 우선 확인 항목은 scan pose 도착 후 12초 안에
 `pick_sequence_start`가 생성되는지와, JSONL의 `grasp_target_base_m`이
 실제 원하는 줄기 중심 높이에 대응하는지이다.
+
+## 현재 줄기 방향 target에서 물리 높이 10mm 추가
+
+KP0에서 KP2 방향으로 최대 10mm 이동하는 보정은 줄기 방향을 따르므로,
+줄기가 대각선이면 실제 `base_link Z` 상승량은 10mm보다 작다. 15:44 실행에서도
+새 target은 이전 실행 target보다 약 4mm만 높아 실기에서 차이가 거의 보이지 않았다.
+
+현재 줄기 방향 target을 유지하면서 물리적으로 확실하게 10mm 더 위를 겨냥하도록
+fusion target 생성에 독립적인 파라미터를 추가했다.
+
+```text
+stem target = KP0 + normalize(KP2-KP0) * stem_grasp_offset
+final target = stem target + [0, 0, grasp_target_base_z_trim_m]
+
+grasp_target_base_z_trim_m = +0.010m
+planner GRASP_Z_BIAS = 0.000m
+```
+
+즉, 줄기 방향 보정 뒤에 `base_link +Z 10mm`를 한 번만 적용한다. planner 쪽
+`GRASP_Z_BIAS`는 0으로 유지하여 중복 상승을 방지한다. fusion 시작 로그와 JSONL
+target quality의 `grasp_target_base_z_trim_m`으로 실제 적용 여부를 확인할 수 있다.
+
+다음 실기 검증은 단일 SW target, 저속, 명확히 보이는 줄기에서 수행하며,
+그리퍼 파츠가 과실/잎을 스치는지와 줄기가 파츠 중앙에 들어오는지를 확인한다.

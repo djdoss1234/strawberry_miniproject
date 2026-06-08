@@ -231,7 +231,7 @@ class CuroboPlanner(Node):
         self.declare_parameter("enable_marker_place_sequence", False)
         self.declare_parameter("execute_marker_place_release", False)
         self.declare_parameter("tray_cells_json", "")
-        self.declare_parameter("marker_place_max_age_sec", 300.0)
+        self.declare_parameter("marker_place_max_age_sec", 3600.0)
         self.declare_parameter("marker_place_above_clearance_m", 0.100)
         self._enable_marker_place = bool(
             self.get_parameter("enable_marker_place_sequence").value)

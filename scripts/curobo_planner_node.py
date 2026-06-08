@@ -38,6 +38,8 @@ PRE_APPROACH_SETTLE_SEC = 1.0  # 자세/파지 위치 확정 후 완전 정지
 FINAL_APPROACH_VEL_MM_S = 20.0 # pre-approach → grasp TOOL +Z 저속 직선 진입
 FINAL_APPROACH_ACC_MM_S2 = 30.0
 FINAL_APPROACH_SETTLE_SEC = 0.5
+RETREAT_VEL_MM_S         = 80.0  # 직선 retreat — approach보다 고속으로 줄기 분리
+RETREAT_ACC_MM_S2         = 100.0
 STRAIGHT_RETREAT_SETTLE_SEC = 0.5
 NEIGHBOR_SPHERE_RADIUS_M = 0.030
 
@@ -857,8 +859,9 @@ class CuroboPlanner(Node):
         )
         return ok
 
-    def execute_tool_z_line(self, distance_m: float, motion_label="FINAL_APPROACH_STRAIGHT") -> bool:
-        """현재 TCP 자세를 유지하고 TOOL Z축 방향으로 저속 직선 이동."""
+    def execute_tool_z_line(self, distance_m: float, motion_label="FINAL_APPROACH_STRAIGHT",
+                            vel_mm_s: float = None, acc_mm_s2: float = None) -> bool:
+        """현재 TCP 자세를 유지하고 TOOL Z축 방향으로 직선 이동."""
         if not 0.02 <= abs(distance_m) <= PRE_APPROACH_OFFSET:
             self.get_logger().error(
                 f"MoveLine rejected: {motion_label} distance={distance_m*1000:.1f}mm")
@@ -867,10 +870,13 @@ class CuroboPlanner(Node):
             self.get_logger().error("MoveLine not available")
             return False
 
+        vel = vel_mm_s if vel_mm_s is not None else FINAL_APPROACH_VEL_MM_S
+        acc = acc_mm_s2 if acc_mm_s2 is not None else FINAL_APPROACH_ACC_MM_S2
+
         req = MoveLine.Request()
         req.pos = [0.0, 0.0, float(distance_m * 1000.0), 0.0, 0.0, 0.0]
-        req.vel = [FINAL_APPROACH_VEL_MM_S, 10.0]
-        req.acc = [FINAL_APPROACH_ACC_MM_S2, 20.0]
+        req.vel = [vel, 10.0]
+        req.acc = [acc, 20.0]
         req.time = 0.0
         req.radius = 0.0
         req.ref = 1         # DR_TOOL
@@ -881,7 +887,7 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"{motion_label} TOOL {'+Z' if distance_m > 0 else '-Z'} "
             f"{abs(distance_m)*1000:.1f}mm "
-            f"vel={FINAL_APPROACH_VEL_MM_S:.1f}mm/s")
+            f"vel={vel:.1f}mm/s")
         self.runtime_log.log(
             "motion_command",
             controller="doosan_move_line",
@@ -1389,7 +1395,8 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"4 straight reverse retreat — retracing {final_approach_distance*1000:.1f}mm")
         if not self.execute_tool_z_line(
-                -final_approach_distance, motion_label="RETREAT_STRAIGHT_REVERSE"):
+                -final_approach_distance, motion_label="RETREAT_STRAIGHT_REVERSE",
+                vel_mm_s=RETREAT_VEL_MM_S, acc_mm_s2=RETREAT_ACC_MM_S2):
             self.get_logger().error(
                 "ABORT: straight reverse retreat failed — holding current pose; "
                 "overview motion blocked")
@@ -1414,16 +1421,13 @@ class CuroboPlanner(Node):
             reason=detach_reason,
         )
 
-        # Place 게이트: 파지 증거가 없으면 place 건너뛰고 scan 복귀
-        # GRASP_CONTACT_DETECTED만 place 허용.
-        # GRASP_EMPTY / GRASP_UNVERIFIED → 불확실 → 기본값 place 차단.
-        _allow_place = (grasp_result == "GRASP_CONTACT_DETECTED")
+        # Place 게이트: 빈 파지가 확인된 경우만 차단.
+        # GRASP_CONTACT_DETECTED → 파지 확인 → 허용
+        # GRASP_UNVERIFIED     → 센서 없음/virtual → fail-open, 허용
+        # GRASP_EMPTY          → jaw 완전 닫힘, 확실히 빔 → 차단
+        _allow_place = (grasp_result != "GRASP_EMPTY")
         if not _allow_place:
-            place_block_reason = (
-                "GRASP_EMPTY: jaw fully closed, nothing grabbed"
-                if grasp_result == "GRASP_EMPTY"
-                else "GRASP_UNVERIFIED: sensor read unavailable"
-            )
+            place_block_reason = "GRASP_EMPTY: jaw fully closed, nothing grabbed"
             self.get_logger().warn(
                 f"PLACE_GATE_BLOCKED ({grasp_result}): {place_block_reason}")
             self.runtime_log.log(

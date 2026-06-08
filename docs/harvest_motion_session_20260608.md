@@ -354,3 +354,51 @@ planner GRASP_Z_BIAS = 0
 planner는 별도 base Z 보정을 중복 적용하지 않는다. JSONL의 target quality에
 `grasp_target_source`, `grasp_offset_from_kp0_m`, `grasp_direction_base`,
 `grasp_target_base_m`을 저장한다.
+
+## 15:44~15:49 재시험: 높이 변화가 작아 보인 원인과 무동작 원인 분리
+
+두 번의 재시험에서 관찰된 현상은 서로 다른 원인이었다.
+
+### 첫 시도: 새 줄기 방향 target은 적용됐지만 물리 높이 차이가 작음
+
+`curobo_planner_node_20260608T154424-15c612e0.jsonl`에서는 새 fusion target이
+planner에 전달되어 실제 접근까지 실행됐다.
+
+```text
+input target: (-345.9, 683.9, 469.9)mm
+prepared target after wall clamp: (-345.9, 672.0, 469.9)mm
+planner extra base-Z bias: 0mm
+```
+
+이전 `base_link +Z 15mm` 실행 목표가 약 `466mm`였기 때문에, 새 줄기 방향 목표의
+실제 Z는 이전 실행 위치보다 약 `4mm`만 높았다. 따라서 코드 변경은 적용됐지만
+실기 영상에서는 이전과 거의 같은 높이로 보일 수 있다. 다음 높이 튜닝은
+`KP0`, `KP2`, 최종 target의 실제 차이를 JSONL로 비교한 뒤 별도 보정량으로
+조정해야 한다.
+
+### 두 번째 시도: 잘못된 fusion guard 때문에 target이 발행되지 않음
+
+15:47 및 15:49 실행에서 planner는 정상적으로 Ready 상태였지만
+`pick_sequence_start`가 없었고, scan executor는 `SCANNED_EMPTY`로 종료했다.
+fusion 로그에는 다음 reject가 반복됐다.
+
+```text
+stem_side_keypoint_not_inside_matched_ripe_mask
+```
+
+이 조건은 과실 몸체 segmentation mask 안에 줄기 쪽 `KP0` 또는 `KP1`이 있어야
+한다고 가정했다. 그러나 현재 모델에서 segmentation mask는 과실 몸체이고,
+KP0/KP1은 줄기 쪽 점이므로 마스크 밖에 있는 것이 정상이다. 특히 유효한
+`center` 매칭까지 이 조건이 차단하여 검출이 보여도 로봇이 움직이지 않는
+간헐적 `SCANNED_EMPTY`를 만들었다.
+
+수정 후에는 이 잘못된 hard reject를 제거했다. 대신 기존의 다음 검사는 유지한다.
+
+- seg class가 ripe인지와 HSV ripe metrics
+- 필요한 stem keypoint confidence
+- KP0/KP1/KP2의 유효 depth 및 3D 줄기 형상
+- 여러 프레임 동안의 stable target tracking
+
+따라서 다음 단일 SW 검증의 우선 확인 항목은 scan pose 도착 후 12초 안에
+`pick_sequence_start`가 생성되는지와, JSONL의 `grasp_target_base_m`이
+실제 원하는 줄기 중심 높이에 대응하는지이다.

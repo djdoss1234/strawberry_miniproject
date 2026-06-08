@@ -532,8 +532,9 @@ class StrawberryFusionNode(Node):
 
         Close-up views often contain overlapping strawberries/leaves.  The old
         rule used only the pose bbox center, which can jump between adjacent
-        masks.  Prefer KP0/KP1 containment because those are the stem-side
-        points we actually grasp from; use bbox center only as weak evidence.
+        masks. Keypoint containment is useful matching evidence, but stem-side
+        KP0/KP1 are normally outside a fruit-body segmentation mask and must
+        not be required for accepting an otherwise valid ripe match.
         """
         pose_cx = (pose_bbox[0] + pose_bbox[2]) / 2.0
         pose_cy = (pose_bbox[1] + pose_bbox[3]) / 2.0
@@ -724,15 +725,11 @@ class StrawberryFusionNode(Node):
                     for ki in range(3)
                 ]
                 match_evidence = set(match["evidence"].split(","))
-                if not {"kp0", "kp1"}.intersection(match_evidence):
-                    if run_infer:
-                        self._reject_target(
-                            "stem_side_keypoint_not_inside_matched_ripe_mask",
-                            kp_conf=kp_conf,
-                            match_evidence=sorted(match_evidence),
-                            ripe_metrics=ripe_metrics,
-                        )
-                    continue
+                # The seg mask describes the fruit body, while KP0/KP1 are
+                # stem-side points and are expected to lie outside that mask.
+                # Do not reject center-only matches here. Target safety still
+                # depends on ripe metrics, keypoint confidence, 3D stem
+                # geometry, and stable multi-frame tracking below.
 
                 required_kps = (0, 1, 2) if self._require_all_stem_kps else (0,)
                 low_conf_kps = [ki for ki in required_kps if kp_conf[ki] < self._pick_kp_min]

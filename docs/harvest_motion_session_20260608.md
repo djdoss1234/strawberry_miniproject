@@ -516,6 +516,23 @@ marker place를 다시 검증하려면 수확 직전에 tray localization을 갱
 실제 release는 fresh tray JSON, 물리적 분리 확인, slot above clearance 확인을
 모두 만족한 단일 시도에서만 승인한다.
 
+### Vision model rollback: best_box -> original segmentation
+
+후속 점검에서 `best_box.pt` 파일 이상 가능성이 제기되어 단일 YOLO 노드의 모델을
+기존 segmentation 모델로 되돌렸다.
+
+```text
+removed: ~/Downloads/best_box.pt
+active:  ~/Downloads/share_yolo/share_yolo/strawberry_seg_best.pt
+task:    segment
+classes: {0: ripe, 1: unripe, 2: sick}
+```
+
+`strawberry_fusion_node.py`는 원래부터 같은 share_yolo segmentation 모델과
+`strawberry_pose_best.pt`를 함께 사용하고 있었다. 이번 변경으로
+`strawberry_yolo_node.py`도 동일한 segmentation 모델 source를 사용한다.
+`sick` class의 pick 차단 규칙은 유지한다.
+
 다음 조건에서는 place와 자동 scan continuation을 차단하고 현재 자세에서 정지한다.
 
 - marker localization JSON 없음

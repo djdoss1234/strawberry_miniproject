@@ -46,7 +46,9 @@ STRONG_RED_HSV_RANGES = (
     (np.array([168, 120, 60], dtype=np.uint8), np.array([179, 255, 255], dtype=np.uint8)),
 )
 
-MODEL_PATH = os.path.expanduser("~/Downloads/best_box.pt")
+MODEL_PATH = os.path.expanduser(
+    "~/Downloads/share_yolo/share_yolo/strawberry_seg_best.pt"
+)
 CALIB_NPZ = os.path.expanduser(
     "~/doosan_ws/src/e0509_gripper_description/config/calibration_eye_in_hand_1.npz"
 )

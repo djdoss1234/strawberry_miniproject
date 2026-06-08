@@ -30,7 +30,8 @@ from runtime_jsonl_logger import RuntimeJsonlLogger
 
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
-GRASP_RETRY_OFFSETS  = [0.015, 0.030, 0.050, 0.070]
+GRASP_RETRY_OFFSETS  = [0.015, 0.030, 0.040, 0.050, 0.070]
+LEFTMOST_GRASP_X_CORR_M = 0.010   # x < -300mm: ELBOW_UP 드리프트 보정 (+X, 오른쪽으로 10mm)
 GRASP_Z_BIAS         = 0.000    # fusion이 KP0→KP2 줄기 방향 보정을 적용하므로 중복 Z 보정 금지
 PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
 PRE_APPROACH_SETTLE_SEC = 1.0  # 자세/파지 위치 확정 후 완전 정지
@@ -475,8 +476,8 @@ class CuroboPlanner(Node):
         if straw[0] > 0.25:
             return [-0.03, 0.0]
         if straw[0] < -0.30:
-            # 실기 관찰: x < -300mm 대상은 offset 0.015/0.030 IK 항상 실패 → 스킵으로 ~10s 절약
-            return [o for o in GRASP_RETRY_OFFSETS if o >= 0.050]
+            # x < -300mm: 0.015/0.030 IK 항상 실패, 0.040(y=0.472m)부터 시도
+            return [o for o in GRASP_RETRY_OFFSETS if o >= 0.040]
         return GRASP_RETRY_OFFSETS
 
     def call_trigger(self, client):
@@ -1158,6 +1159,8 @@ class CuroboPlanner(Node):
         raw_straw = np.array([p.x, raw_y, max(p.z, 0.05)])
         straw = raw_straw + np.array([0.0, 0.0, GRASP_Z_BIAS])
         straw[2] = max(straw[2], 0.05)
+        if raw_straw[0] < -0.30:
+            straw[0] += LEFTMOST_GRASP_X_CORR_M  # ELBOW_UP 드리프트 -X 방향 보정
 
         x_min, x_max = DIRECT_GRASP_TARGET_X_RANGE_M
         if not (x_min <= float(raw_straw[0]) <= x_max):

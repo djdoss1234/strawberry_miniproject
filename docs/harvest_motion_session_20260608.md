@@ -278,3 +278,30 @@ pre-approach 계획 횟수가 3회에서 1회로 줄어든다. 물리 접근 속
 
 잎 접촉 문제는 이 최적화로 해결되지 않는다. 다음 안전 개선은 RGB-D 접근 corridor
 occupancy 검사 또는 leaf segmentation을 통해 잎/미지 물체를 scene에 반영하는 것이다.
+
+## 고정 5초 dwell에서도 target 전달 실패
+
+15:09 실행에서 planner는 Ready 상태였지만 SW scan pose에서 움직이지 않았다.
+
+```text
+AT_SCAN_POSE root/sw:             15:10:04.251
+SCANNED_EMPTY / SCAN_COMPLETE:    15:10:09.256
+first stable_pick_target publish: 15:10:10.840
+```
+
+첫 유효 target이 scan pose 도착 약 6.59초 후 발행되어 고정 5초 dwell을 넘겼다.
+planner에는 `/dsr01/curobo/pick_pose`가 전달되지 않았고, JSONL에도
+`pick_sequence_start`가 없었다.
+
+고정 dwell을 반복해서 늘리는 대신 adaptive detection wait로 변경했다.
+
+```text
+scan pose 도착
+ -> detection buffer reset
+ -> 최대 12초 동안 첫 stable target 대기
+ -> target 발견 즉시 다음 pick 단계 진행
+ -> 12초 동안 없으면 SCANNED_EMPTY
+```
+
+이 구조는 target이 빨리 보이는 셀에서는 불필요한 dwell을 줄이고, 품질 guard와
+median stabilization 때문에 target 발행이 늦어지는 경우에는 race를 방지한다.

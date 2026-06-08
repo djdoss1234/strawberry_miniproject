@@ -44,7 +44,7 @@ RealSense RGB + aligned depth
 | 3D 변환 | depth + hand-eye + E0509 FK | `base_link` 기준 줄기 좌표 |
 | 목표 안정화 | 최근 9개 KP0 중앙값 + 12mm spread 제한 | 흔들리는 target 발행 차단 |
 | 줄기 품질 검증 | KP confidence + depth + 3D segment geometry | 가림/오검출 target 접근 차단 |
-| scan dwell | 기본 5초 후보 수집 window | 안정화 target이 늦게 발행되는 race 방지 |
+| scan dwell | 첫 stable target까지 adaptive wait, 최대 12초 | 빠른 target은 즉시 진행하고 늦은 안정화 target race 방지 |
 | 셀/타깃 순서 | `scan_executor_node.py` | root cell 및 logical subcell 순차 실행 |
 | 장애물 구성 | `curobo_planner_node.py` | whiteboard + 이웃 딸기 sphere |
 | pre-approach | cuRobo Cartesian planning | 충돌 회피 joint trajectory |

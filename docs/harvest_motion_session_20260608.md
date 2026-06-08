@@ -426,3 +426,73 @@ target quality의 `grasp_target_base_z_trim_m`으로 실제 적용 여부를 확
 
 다음 실기 검증은 단일 SW target, 저속, 명확히 보이는 줄기에서 수행하며,
 그리퍼 파츠가 과실/잎을 스치는지와 줄기가 파츠 중앙에 들어오는지를 확인한다.
+
+## SW 반복 수확용 marker 기반 place 연결
+
+2026-06-04에 이동한 계란판에서도 ArUco 기반 15개 slot grid가 다시 계산되는 것을
+확인했다. 당시 검증된 계란판 관측 자세는 다음과 같다.
+
+```text
+TRAY_VIEW_JOINTS_DEG = [-0.02, -2.41, 111.87, 175.94, -31.34, 93.42]
+```
+
+최신 `~/Downloads/share_tray/output/tray_cells_*.json`을 place 좌표 source로 읽는
+marker place 단계를 현재 수확 planner의 직선 retreat 뒤에 연결했다.
+
+```text
+SW scan / target lock
+ -> grasp
+ -> TOOL -Z straight reverse retreat
+ -> overview transfer
+ -> tray-view
+ -> marker-derived slot above (+100mm)
+ -> marker-derived 60mm standoff release position
+ -> gripper release
+ -> slot above retreat
+ -> SW pick-start scan pose
+ -> 다음 target
+```
+
+현재 marker output의 `position_tcp_mm`는 그리퍼 파츠 끝이 tray plane보다 60mm
+위에 위치하는 좌표다. 첫 release baseline은 이 검증된 standoff를 그대로 사용하며,
+실제 slot 내부 깊은 삽입은 아직 수행하지 않는다.
+
+안전 파라미터:
+
+```text
+enable_marker_place_sequence:=false
+execute_marker_place_release:=false
+marker_place_max_age_sec:=300.0
+marker_place_above_clearance_m:=0.100
+tray_cells_json:=""  # 빈 값이면 최신 tray_cells_*.json 사용
+```
+
+첫 검증은 release를 끈 preview mode로 수행한다.
+
+```bash
+ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
+  -p enable_marker_place_sequence:=true \
+  -p execute_marker_place_release:=false
+```
+
+이 모드에서는 수확·retreat 후 slot above까지만 이동하고 정지한다.
+`pick_complete`도 발행하지 않으므로 scan executor가 다음 동작으로 넘어가지 않는다.
+above clearance와 실제 계란판 위치를 확인한 뒤에만 release를 승인한다.
+
+```bash
+ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
+  -p enable_marker_place_sequence:=true \
+  -p execute_marker_place_release:=true
+```
+
+다음 조건에서는 place와 자동 scan continuation을 차단하고 현재 자세에서 정지한다.
+
+- marker localization JSON 없음
+- marker 결과가 300초보다 오래됨
+- slot 목표가 guarded workspace 밖
+- overview/tray-view cuRobo transfer 실패
+- above/release/above-retreat MoveLine 실패
+- place 후 SW scan pose 복귀 실패
+
+`PLACE_SEQUENCE_COMPLETE_UNVERIFIED`는 경로와 release 명령이 끝났다는 뜻이며,
+딸기가 실제 slot 안에 놓였다는 성공 판정은 아니다.

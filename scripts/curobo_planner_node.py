@@ -11,6 +11,7 @@ import torch
 import numpy as np
 import json
 import yaml
+import glob
 
 import rclpy
 from rclpy.node import Node
@@ -64,6 +65,9 @@ GRIPPER_APPROACH_WAIT_SEC   = 1.5  # 접근 포지션 완료 대기 (plan과 병
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
 OVERVIEW_JOINTS_DEG = [87.98, -94.92, 129.89, 175.94, -31.34, 93.42]  # 스캔 기준 포즈
+TRAY_VIEW_JOINTS_DEG = [-0.02, -2.41, 111.87, 175.94, -31.34, 93.42]
+DEFAULT_TRAY_CELLS_GLOB = os.path.expanduser(
+    "~/Downloads/share_tray/output/tray_cells_*.json")
 
 # ── cuRobo 운용 한계 ───────────────────────────────────────────────────────────
 OPERATIONAL_JOINT_LIMITS_DEG = [
@@ -174,6 +178,7 @@ class CuroboPlanner(Node):
         self.service_cb_group = rclpy.callback_groups.ReentrantCallbackGroup()
         self.current_joints = None
         self._pick_busy = False
+        self._marker_place_slot_idx = 0
         self.static_cuboids = load_environment_cuboids()
         self.dynamic_cuboids = []
         self.neighbor_spheres: list = []
@@ -211,6 +216,22 @@ class CuroboPlanner(Node):
         self.motion_gen.warmup(warmup_js_trajopt=False)
         self.motion_gen.detach_object_from_robot()
         self.get_logger().info("cuRobo MotionGen warmed up!")
+
+        self.declare_parameter("enable_marker_place_sequence", False)
+        self.declare_parameter("execute_marker_place_release", False)
+        self.declare_parameter("tray_cells_json", "")
+        self.declare_parameter("marker_place_max_age_sec", 300.0)
+        self.declare_parameter("marker_place_above_clearance_m", 0.100)
+        self._enable_marker_place = bool(
+            self.get_parameter("enable_marker_place_sequence").value)
+        self._execute_marker_place_release = bool(
+            self.get_parameter("execute_marker_place_release").value)
+        self._tray_cells_json = os.path.expanduser(
+            str(self.get_parameter("tray_cells_json").value))
+        self._marker_place_max_age_sec = float(
+            self.get_parameter("marker_place_max_age_sec").value)
+        self._marker_place_above_clearance_m = float(
+            self.get_parameter("marker_place_above_clearance_m").value)
 
         # ── ROS2 인터페이스 ────────────────────────────────────────────────────
         self.create_subscription(
@@ -271,6 +292,11 @@ class CuroboPlanner(Node):
                 "wall_quat_wxyz": WALL_QUAT_WXYZ,
                 "grasp_quat_retry_variants": GRASP_QUAT_RETRY_VARIANTS,
                 "operational_joint_limits_deg": OPERATIONAL_JOINT_LIMITS_DEG,
+                "enable_marker_place_sequence": self._enable_marker_place,
+                "execute_marker_place_release": self._execute_marker_place_release,
+                "tray_cells_json": self._tray_cells_json,
+                "marker_place_max_age_sec": self._marker_place_max_age_sec,
+                "marker_place_above_clearance_m": self._marker_place_above_clearance_m,
             },
             unmodeled_collision_classes=["leaf", "stem", "support_string"],
         )
@@ -302,6 +328,10 @@ class CuroboPlanner(Node):
             "  allowed grasp pitch corrections/elevations: " + ", ".join(candidate_elevations))
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
+        self.get_logger().info(
+            f"  marker place: enabled={self._enable_marker_place} "
+            f"release={self._execute_marker_place_release} "
+            f"max_age={self._marker_place_max_age_sec:.0f}s")
 
         # 노드 시작 시 그리퍼를 approach 위치로 초기화 (2s 후 — gripper_service_node 연결 여유)
         self._gripper_init_done = False
@@ -834,6 +864,56 @@ class CuroboPlanner(Node):
         )
         return ok
 
+    def execute_base_line(self, posx_mm_deg, motion_label, vel_mm_s=20.0) -> bool:
+        """베이스 기준 절대 TCP 직선 이동. Marker place의 수직 above/release에만 사용."""
+        if len(posx_mm_deg) != 6:
+            self.get_logger().error(f"{motion_label}: expected 6D posx")
+            return False
+        if not self.cli_movel.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error("MoveLine not available")
+            return False
+
+        req = MoveLine.Request()
+        req.pos = [float(v) for v in posx_mm_deg]
+        req.vel = [float(vel_mm_s), 10.0]
+        req.acc = [30.0, 20.0]
+        req.time = 0.0
+        req.radius = 0.0
+        req.ref = 0         # DR_BASE
+        req.mode = 0        # DR_MV_MOD_ABS
+        req.blend_type = 0
+        req.sync_type = 0
+
+        self.get_logger().info(
+            f"{motion_label} BASE ABS "
+            f"xyz={[round(v, 1) for v in req.pos[:3]]}mm "
+            f"abc={[round(v, 1) for v in req.pos[3:]]}deg")
+        self.runtime_log.log(
+            "motion_command",
+            controller="doosan_move_line",
+            label=motion_label,
+            service="/dsr01/motion/move_line",
+            reference_frame="base",
+            absolute_pose_mm_deg=req.pos,
+            velocity=req.vel,
+            acceleration=req.acc,
+        )
+        future = self.cli_movel.call_async(req)
+        t0 = time.time()
+        while not future.done() and (time.time() - t0) < 60.0:
+            time.sleep(0.05)
+        ok = future.done() and future.result() and future.result().success
+        if not ok:
+            self.get_logger().error(f"{motion_label} MoveLine failed/timeout")
+        self.runtime_log.log(
+            "motion_result",
+            controller="doosan_move_line",
+            label=motion_label,
+            success=bool(ok),
+            current_joints_rad=self.current_joints,
+        )
+        return ok
+
     def _nearest_equivalent_joints(self, base_joints_deg):
         """J4/J6를 현재 위치에서 가장 가까운 360° equivalent로 조정."""
         if self.current_joints is None:
@@ -889,6 +969,137 @@ class CuroboPlanner(Node):
             return True, ret[0][-1].tolist()
         self.get_logger().warn(f"{label} CuRobo joint-space failed")
         return False, start_joints
+
+    def _latest_tray_cells_json(self):
+        if self._tray_cells_json:
+            return self._tray_cells_json
+        files = sorted(
+            glob.glob(DEFAULT_TRAY_CELLS_GLOB),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        return files[0] if files else None
+
+    def _load_marker_place_target(self):
+        path = self._latest_tray_cells_json()
+        if not path or not os.path.isfile(path):
+            self.get_logger().error("MARKER_PLACE_BLOCKED: tray cells JSON not found")
+            return None
+        age_sec = time.time() - os.path.getmtime(path)
+        if age_sec > self._marker_place_max_age_sec:
+            self.get_logger().error(
+                f"MARKER_PLACE_BLOCKED: tray localization stale "
+                f"age={age_sec:.0f}s > {self._marker_place_max_age_sec:.0f}s")
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            cells = data.get("cells", [])
+            if not cells:
+                raise ValueError("no cells")
+            cell = cells[self._marker_place_slot_idx % len(cells)]
+            tcp = cell["position_tcp_mm"]
+            orient = cell["task_orientation_deg"]
+            release = [
+                float(tcp["x"]), float(tcp["y"]), float(tcp["z"]),
+                float(orient["rx"]), float(orient["ry"]), float(orient["rz"]),
+            ]
+            if not (
+                -800.0 <= release[0] <= 800.0
+                and -800.0 <= release[1] <= 800.0
+                and 250.0 <= release[2] <= 1200.0
+            ):
+                raise ValueError(f"target outside guarded workspace: {release[:3]}")
+        except Exception as exc:
+            self.get_logger().error(f"MARKER_PLACE_BLOCKED: invalid tray JSON ({exc})")
+            return None
+
+        above = list(release)
+        above[2] += self._marker_place_above_clearance_m * 1000.0
+        gripper_offset = data.get("gripper_offset") or {}
+        self.runtime_log.log(
+            "marker_place_target_loaded",
+            path=path,
+            age_sec=age_sec,
+            slot_index=cell.get("index"),
+            row=cell.get("row"),
+            col=cell.get("col"),
+            release_posx_mm_deg=release,
+            above_posx_mm_deg=above,
+            source_standoff_mm=gripper_offset.get("fingertip_standoff_mm"),
+        )
+        return {
+            "path": path,
+            "slot_index": int(cell.get("index", self._marker_place_slot_idx)),
+            "release": release,
+            "above": above,
+        }
+
+    def _execute_marker_place_after_retreat(self, retreat_joints):
+        """Marker-derived place. Release 승인 전에는 above에서 정지한다."""
+        target = self._load_marker_place_target()
+        if target is None:
+            return "failed", retreat_joints
+
+        self.get_logger().info(
+            f"5 marker place slot={target['slot_index']} via overview/tray-view")
+        overview_deg = self.overview_joints_near_current()
+        ok, overview_joints = self.plan_to_fixed_joints_pose(
+            retreat_joints, overview_deg, "marker place transfer overview",
+            skip_swing_check=True)
+        if not ok:
+            self.get_logger().error(
+                "MARKER_PLACE_BLOCKED: transfer overview plan failed; holding fruit")
+            return "failed", retreat_joints
+
+        tray_view_deg = self._nearest_equivalent_joints(TRAY_VIEW_JOINTS_DEG)
+        ok, tray_view_joints = self.plan_to_fixed_joints_pose(
+            overview_joints, tray_view_deg, "marker place tray view",
+            skip_swing_check=True)
+        if not ok:
+            self.get_logger().error(
+                "MARKER_PLACE_BLOCKED: tray-view plan failed; holding fruit")
+            return "failed", overview_joints
+
+        if not self.execute_base_line(
+                target["above"], "MARKER_PLACE_ABOVE", vel_mm_s=20.0):
+            self.get_logger().error(
+                "MARKER_PLACE_BLOCKED: above move failed; holding fruit")
+            return "failed", tray_view_joints
+
+        if not self._execute_marker_place_release:
+            self.get_logger().warn(
+                "MARKER_PLACE_PREVIEW_HOLD: above reached; release disabled. "
+                "Inspect clearance before enabling execute_marker_place_release.")
+            return "preview_hold", list(self.current_joints or tray_view_joints)
+
+        if not self.execute_base_line(
+                target["release"], "MARKER_PLACE_RELEASE_DESCEND", vel_mm_s=12.0):
+            self.get_logger().error(
+                "MARKER_PLACE_BLOCKED: release descend failed; holding fruit")
+            return "failed", list(self.current_joints or tray_view_joints)
+
+        self.get_logger().info("6 marker place release gripper")
+        self.runtime_log.log(
+            "gripper_command", command="release",
+            slot_index=target["slot_index"])
+        self.call_trigger(self.cli_gripper_open)
+        time.sleep(2.0)
+
+        if not self.execute_base_line(
+                target["above"], "MARKER_PLACE_ABOVE_RETREAT", vel_mm_s=12.0):
+            self.get_logger().error(
+                "MARKER_PLACE_RELEASED_BUT_RETREAT_FAILED: holding position")
+            return "failed_after_release", list(self.current_joints or tray_view_joints)
+
+        self._marker_place_slot_idx += 1
+        self.runtime_log.log(
+            "marker_place_complete",
+            result_code="PLACE_SEQUENCE_COMPLETE_UNVERIFIED",
+            slot_index=target["slot_index"],
+            tray_cells_json=target["path"],
+        )
+        return "success", list(self.current_joints or tray_view_joints)
 
     # ── Pick 시퀀스 ────────────────────────────────────────────────────────────
 
@@ -1116,19 +1327,47 @@ class CuroboPlanner(Node):
             if self.current_joints is not None
             else grasp_joints
         )
-        self.get_logger().info("4b return to pick-start scan pose after straight reverse retreat")
-        # 직선으로 안전 거리를 확보한 뒤 이번 pick이 시작된 scan pose로 복귀한다.
-        # scan_executor는 같은 셀의 다음 target을 이어서 전달하며, 셀 이동 및
-        # 최종 overview 복귀는 scan_executor가 담당한다.
+
+        return_start_joints = retreat_joints
+        if self._enable_marker_place:
+            place_status, place_joints = self._execute_marker_place_after_retreat(
+                retreat_joints)
+            if place_status != "success":
+                self._clear_neighbor_obstacles()
+                self.runtime_log.log(
+                    "pick_sequence_stopped",
+                    result_code=(
+                        "MARKER_PLACE_PREVIEW_HOLD"
+                        if place_status == "preview_hold"
+                        else "MARKER_PLACE_FAILED"
+                    ),
+                    place_status=place_status,
+                    current_joints_rad=self.current_joints,
+                )
+                self.get_logger().warn(
+                    f"PICK_SEQUENCE_HOLD place_status={place_status}; "
+                    "pick_complete not published, automatic scan paused")
+                return
+            return_start_joints = place_joints
+
+        self.get_logger().info("7 return to pick-start scan pose")
+        # 직선 retreat 또는 marker place 완료 후 이번 pick이 시작된 scan pose로
+        # 복귀한다. scan_executor는 같은 SW 셀의 다음 target을 이어서 전달한다.
         pick_start_joints_deg = np.rad2deg(pick_start_joints).tolist()
         pick_start_joints_deg = self._nearest_equivalent_joints(pick_start_joints_deg)
         ok, _ = self.plan_to_fixed_joints_pose(
-            retreat_joints, pick_start_joints_deg, "pick-start scan pose after retreat",
+            return_start_joints, pick_start_joints_deg, "pick-start scan pose after pick/place",
             skip_swing_check=True)
         if not ok:
             self.get_logger().warn(
-                "pick-start scan pose after retreat failed — MoveJoint direct")
-            self.movej_direct(pick_start_joints_deg)
+                "pick-start scan pose after pick/place failed; holding current pose")
+            self._clear_neighbor_obstacles()
+            self.runtime_log.log(
+                "pick_sequence_stopped",
+                result_code="RETURN_TO_SCAN_FAILED",
+                current_joints_rad=self.current_joints,
+            )
+            return
 
         self._clear_neighbor_obstacles()
         self._reset_gripper()  # 다음 파지를 위해 approach 위치(600)로 복귀
@@ -1137,6 +1376,9 @@ class CuroboPlanner(Node):
             "pick_sequence_complete",
             result_code="SEQUENCE_COMPLETE_UNVERIFIED",
             return_pose="pick_start_scan_pose",
+            marker_place_enabled=self._enable_marker_place,
+            marker_place_release_executed=(
+                self._enable_marker_place and self._execute_marker_place_release),
             current_joints_rad=self.current_joints,
         )
         self.get_logger().info("=== PICK COMPLETE ===")

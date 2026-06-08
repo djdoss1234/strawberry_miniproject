@@ -19,7 +19,7 @@ Intel RealSense RGB-D (eye-in-hand)
   -> gripper close -> Doosan MoveLine TOOL -Z straight reverse retreat
   -> Doosan MoveSplineJoint / MoveJoint hybrid execution
   -> RH-P12-RN-A soft close
-  -> taught egg-tray slot placement
+  -> optional guarded ArUco-derived egg-tray slot placement
 ```
 
 상세 architecture diagram과 sequence diagram은 [docs/system_architecture.md](docs/system_architecture.md)를 참고하세요.
@@ -50,7 +50,8 @@ Intel RealSense RGB-D (eye-in-hand)
 - 파지 후 동일 거리를 Doosan `MoveLine` TOOL `-Z`로 역주행하여 안전하게 후퇴
 - cuRobo trajectory를 Doosan `MoveSplineJoint` 실행 명령으로 연결
 - 그리퍼 압상을 줄이기 위한 단계적 position soft close
-- 계란판 slot0~2의 `above`/`release` pose teaching 및 place 실행
+- 계란판 slot0~2의 `above`/`release` pose teaching
+- 최신 ArUco 15-slot 결과를 읽는 guarded marker-place sequence
 - 실측 whiteboard collision world와 start collision diagnostic
 - RViz/MoveIt `CollisionObject` 기반 환경 시각화
 - cuRobo 없는 Doosan native motion baseline 노드
@@ -143,6 +144,23 @@ ros2 run e0509_gripper_description curobo_planner_node.py
 ros2 run e0509_gripper_description strawberry_yolo_node.py
 ```
 
+Marker place는 기본 비활성화되어 있습니다. 먼저 최신 tray localization을 생성한 뒤,
+release를 끈 preview mode로 slot above clearance를 확인합니다.
+
+```bash
+ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
+  -p enable_marker_place_sequence:=true \
+  -p execute_marker_place_release:=false
+```
+
+단일 slot above 검증 후에만 실제 release를 명시적으로 승인합니다.
+
+```bash
+ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
+  -p enable_marker_place_sequence:=true \
+  -p execute_marker_place_release:=true
+```
+
 또는 planner warm-up 이후 vision node를 시작하는 launch:
 
 ```bash
@@ -177,13 +195,14 @@ config/calibration_eye_in_hand_1.npz
 
 ## Known Limitations
 
-- 현재 place target은 계란판 고정 티칭 pose에 의존하며 tray 이동 시 재티칭이 필요합니다.
+- Marker-derived place는 최신 localization JSON을 읽을 수 있지만, tray/table collision
+  geometry가 아직 비활성화되어 있어 preview 및 저속 단일 slot 검증이 필요합니다.
 - 현재 실행은 전 구간 cuRobo가 아닌 hybrid 방식이며, 짧은 place/home 동작에는 `MoveJoint`를 사용합니다.
 - 2026-06-07 SW 실기에서 수평 정면 접근은 확인했지만 최종 진입 깊이가 부족해 실제 줄기 파지는 아직 성공하지 못했습니다.
 - `grasp OK`와 `pick_complete`는 모션/시퀀스 완료 이벤트이며 실제 파지 성공 판정이 아닙니다.
 - demo 안정화를 위해 self/table/tray/placed-fruit collision 검사 일부가 비활성화되어 있습니다.
 - `/dsr01/gripper/stroke`는 현재 실제 파지 성공 또는 힘 피드백으로 사용할 수 없습니다.
-- VLA, 실행되는 quadtree 탐색, marker/RGB-D tray localization은 후속 프로젝트 계획입니다.
+- VLA와 실행되는 quadtree 탐색은 후속 프로젝트 계획입니다.
 
 ## Next Project Direction
 

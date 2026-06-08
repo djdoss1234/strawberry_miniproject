@@ -76,6 +76,8 @@ For real place execution, validate `position_tcp_mm` against table/tray collisio
 
 ## Safety Status
 
-Do not enable the egg-tray place sequence yet.
-
-Current place is disabled because table/tray collision risk is unresolved. The ArUco slot generation is validated as a coordinate source, but the robot path to those coordinates still needs RViz/collision dry-run and low-speed physical validation.
+Marker-derived place integration was added on 2026-06-08, but release remains
+explicitly gated. The first physical validation must run in preview mode and stop
+at the marker-derived slot above pose. Table/tray collision geometry is still
+not active in the cuRobo world, so preview clearance inspection and low-speed
+single-slot validation are required before enabling release.

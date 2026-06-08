@@ -177,6 +177,11 @@ class StrawberryFusionNode(Node):
             "~/doosan_ws/src/e0509_gripper_description/config/calibration_eye_in_hand_1.npz")
         self.declare_parameter("yolo_conf",    0.25)
         self.declare_parameter("kp_conf_min",  0.40)   # keypoint visibility threshold
+        self.declare_parameter("pick_kp_conf_min", 0.60)
+        self.declare_parameter("require_all_stem_keypoints", True)
+        self.declare_parameter("stem_segment_min_m", 0.005)
+        self.declare_parameter("stem_segment_max_m", 0.100)
+        self.declare_parameter("stem_total_max_m", 0.160)
         self.declare_parameter("infer_every",  3)       # run inference every N camera frames
         self.declare_parameter("stable_hits_required", 4)
         self.declare_parameter("target_position_window_size", 9)
@@ -195,6 +200,15 @@ class StrawberryFusionNode(Node):
         calib_path = os.path.expanduser(self.get_parameter("calib_npz").value)
         self._conf    = self.get_parameter("yolo_conf").value
         self._kp_min  = self.get_parameter("kp_conf_min").value
+        self._pick_kp_min = float(self.get_parameter("pick_kp_conf_min").value)
+        self._require_all_stem_kps = bool(
+            self.get_parameter("require_all_stem_keypoints").value)
+        self._stem_segment_min_m = float(
+            self.get_parameter("stem_segment_min_m").value)
+        self._stem_segment_max_m = float(
+            self.get_parameter("stem_segment_max_m").value)
+        self._stem_total_max_m = float(
+            self.get_parameter("stem_total_max_m").value)
         self._infer_n = max(1, self.get_parameter("infer_every").value)
         self._stable_hits = max(1, int(self.get_parameter("stable_hits_required").value))
         self._position_window_size = max(
@@ -264,6 +278,7 @@ class StrawberryFusionNode(Node):
         self._next_track_id = 1
         self._active_track_id = None
         self._active_last_seen = 0.0
+        self._last_reject_log = {}
         self._last_seg_items = []   # cached from last inference for smooth viz
         self._last_pose_items = []
         self.timer = self.create_timer(1.0 / 30.0, self._loop)
@@ -274,6 +289,11 @@ class StrawberryFusionNode(Node):
             f"Target stabilization: median window={self._position_window_size}, "
             f"min_samples={self._position_min_samples}, "
             f"max_spread={self._position_max_spread_m*1000:.0f}mm")
+        self.get_logger().info(
+            f"Stem quality guard: kp_conf>={self._pick_kp_min:.2f}, "
+            f"all_keypoints={self._require_all_stem_kps}, "
+            f"segment={self._stem_segment_min_m*1000:.0f}.."
+            f"{self._stem_segment_max_m*1000:.0f}mm")
         self.runtime_log.log(
             "node_start",
             pipeline_role="seg_pose_fusion_and_target_generation",
@@ -282,6 +302,11 @@ class StrawberryFusionNode(Node):
             parameters={
                 "yolo_conf": self._conf,
                 "kp_conf_min": self._kp_min,
+                "pick_kp_conf_min": self._pick_kp_min,
+                "require_all_stem_keypoints": self._require_all_stem_kps,
+                "stem_segment_min_m": self._stem_segment_min_m,
+                "stem_segment_max_m": self._stem_segment_max_m,
+                "stem_total_max_m": self._stem_total_max_m,
                 "infer_every": self._infer_n,
                 "stable_hits_required": self._stable_hits,
                 "target_position_window_size": self._position_window_size,
@@ -291,7 +316,7 @@ class StrawberryFusionNode(Node):
             },
         )
 
-    def _update_track(self, pos_base: np.ndarray, quat_xyzw: np.ndarray):
+    def _update_track(self, pos_base: np.ndarray, quat_xyzw: np.ndarray, quality: dict):
         """Simple 3-D nearest-neighbor tracker to suppress frame flicker."""
         now = time.monotonic()
         stale_ids = [
@@ -320,6 +345,7 @@ class StrawberryFusionNode(Node):
                 "hits": 0,
                 "last_seen": now,
                 "last_pub": 0.0,
+                "quality": {},
             }
 
         track = self._tracks[best_id]
@@ -332,6 +358,7 @@ class StrawberryFusionNode(Node):
         track["position_spread_m"] = float(
             np.max(np.linalg.norm(history_array - median_pos, axis=1)))
         track["quat"] = quat_xyzw.astype(float)
+        track["quality"] = quality
         track["hits"] += 1
         track["last_seen"] = now
         return best_id, track
@@ -413,12 +440,23 @@ class StrawberryFusionNode(Node):
             target_quat_xyzw=track["quat"],
             samples=len(track["position_history"]),
             spread_m=track["position_spread_m"],
+            target_quality=track["quality"],
         )
         self.get_logger().info(
             "Published stable pick target "
             f"xyz=({track['pos'][0]:.3f},{track['pos'][1]:.3f},{track['pos'][2]:.3f})m "
             f"samples={len(track['position_history'])} "
-            f"spread={track['position_spread_m']*1000:.1f}mm")
+            f"spread={track['position_spread_m']*1000:.1f}mm "
+            f"kp_conf={track['quality'].get('kp_conf', [])}")
+
+    def _reject_target(self, reason: str, **data):
+        """Rate-limited diagnostics for unsafe or ambiguous stem targets."""
+        now = time.monotonic()
+        if now - self._last_reject_log.get(reason, 0.0) < 1.0:
+            return
+        self._last_reject_log[reason] = now
+        self.runtime_log.log("pick_target_rejected", reason=reason, **data)
+        self.get_logger().warn(f"Pick target rejected: {reason}")
 
     # ── joint callback ────────────────────────────────────────────────────────
     def _joint_cb(self, msg: JointState):
@@ -673,6 +711,34 @@ class StrawberryFusionNode(Node):
                     )
                     continue
 
+                kp_conf = [
+                    float(kps_np[ki][2]) if ki < len(kps_np) else 0.0
+                    for ki in range(3)
+                ]
+                match_evidence = set(match["evidence"].split(","))
+                if not {"kp0", "kp1"}.intersection(match_evidence):
+                    if run_infer:
+                        self._reject_target(
+                            "stem_side_keypoint_not_inside_matched_ripe_mask",
+                            kp_conf=kp_conf,
+                            match_evidence=sorted(match_evidence),
+                            ripe_metrics=ripe_metrics,
+                        )
+                    continue
+
+                required_kps = (0, 1, 2) if self._require_all_stem_kps else (0,)
+                low_conf_kps = [ki for ki in required_kps if kp_conf[ki] < self._pick_kp_min]
+                if low_conf_kps:
+                    if run_infer:
+                        self._reject_target(
+                            "stem_keypoint_low_confidence",
+                            low_conf_keypoints=low_conf_kps,
+                            kp_conf=kp_conf,
+                            match_evidence=sorted(match_evidence),
+                            ripe_metrics=ripe_metrics,
+                        )
+                    continue
+
                 # ── compute 3D keypoint positions ─────────────────────────────
                 # KP0 = stem_base (grasp target — nearest to fruit)
                 # KP1 = stem_mid
@@ -680,36 +746,77 @@ class StrawberryFusionNode(Node):
                 kp3d = {}
                 for ki in range(min(3, len(kps_np))):
                     kx, ky, kconf = kps_np[ki]
-                    if kconf >= self._kp_min:
+                    if kconf >= self._pick_kp_min:
                         pt3d = self._px_to_3d(depth_f, intr, kx, ky, radius=6)
                         if pt3d is not None:
                             kp3d[ki] = pt3d
 
-                # Grasp position: prefer KP0 (stem_base), fallback KP1
-                if 0 in kp3d:
-                    grasp_pt = kp3d[0]
-                elif 1 in kp3d:
-                    grasp_pt = kp3d[1]
-                else:
+                missing_depth_kps = [ki for ki in required_kps if ki not in kp3d]
+                if missing_depth_kps:
+                    if run_infer:
+                        self._reject_target(
+                            "stem_keypoint_depth_invalid",
+                            missing_depth_keypoints=missing_depth_kps,
+                            kp_conf=kp_conf,
+                            match_evidence=sorted(match_evidence),
+                        )
                     cv2.putText(vis, "no-depth",
                                 (int(pose_cx), int(pose_cy) + 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 220), 1)
                     continue
 
-                # Stem direction: KP2 - KP0 (or KP2 - KP1 as fallback)
-                if 2 in kp3d and 0 in kp3d:
-                    stem_vec = kp3d[2] - kp3d[0]
-                elif 2 in kp3d and 1 in kp3d:
-                    stem_vec = kp3d[2] - kp3d[1]
-                else:
-                    stem_vec = None
+                # Automatic pick target is always KP0. A KP1 fallback can move
+                # the gripper away from the fruit-adjacent stem and is unsafe.
+                grasp_pt = kp3d[0]
+                stem_vec = kp3d[2] - kp3d[0] if 2 in kp3d else None
+
+                segment_lengths = {}
+                if 0 in kp3d and 1 in kp3d:
+                    segment_lengths["kp0_kp1_m"] = float(np.linalg.norm(kp3d[1] - kp3d[0]))
+                if 1 in kp3d and 2 in kp3d:
+                    segment_lengths["kp1_kp2_m"] = float(np.linalg.norm(kp3d[2] - kp3d[1]))
+                if 0 in kp3d and 2 in kp3d:
+                    segment_lengths["kp0_kp2_m"] = float(np.linalg.norm(kp3d[2] - kp3d[0]))
+
+                invalid_segments = {
+                    name: length for name, length in segment_lengths.items()
+                    if name != "kp0_kp2_m"
+                    and not self._stem_segment_min_m <= length <= self._stem_segment_max_m
+                }
+                total_length = segment_lengths.get("kp0_kp2_m")
+                if total_length is not None and total_length > self._stem_total_max_m:
+                    invalid_segments["kp0_kp2_m"] = total_length
+                if invalid_segments:
+                    if run_infer:
+                        self._reject_target(
+                            "stem_geometry_implausible",
+                            invalid_segments=invalid_segments,
+                            segment_lengths=segment_lengths,
+                            kp_conf=kp_conf,
+                            kp3d_base_m=kp3d,
+                            match_evidence=sorted(match_evidence),
+                        )
+                    continue
+
+                target_quality = {
+                    "kp_conf": kp_conf,
+                    "kp_pixels": [
+                        [float(kps_np[ki][0]), float(kps_np[ki][1])]
+                        for ki in range(min(3, len(kps_np)))
+                    ],
+                    "kp3d_base_m": kp3d,
+                    "match_evidence": sorted(match_evidence),
+                    "match_score": float(match["score"]),
+                    "ripe_metrics": ripe_metrics,
+                    "stem_segment_lengths_m": segment_lengths,
+                }
 
                 quat_xyzw = (stem_vec_to_quat_xyzw(stem_vec)
                              if stem_vec is not None
                              else np.array([0.0, 0.0, 0.0, 1.0]))
 
                 if run_infer:
-                    track_id, track = self._update_track(grasp_pt, quat_xyzw)
+                    track_id, track = self._update_track(grasp_pt, quat_xyzw, target_quality)
                 else:
                     # Visualization only — find nearest existing track without updating
                     best_id, best_dist = None, float("inf")

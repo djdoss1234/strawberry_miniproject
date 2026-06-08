@@ -10,6 +10,7 @@ RealSense RGB + aligned depth
     -> YOLO segmentation: ripe / unripe / sick
     -> YOLO pose: KP0 stem_base / KP1 stem_mid / KP2 stem_tip
     -> seg-pose matching + HSV ripe safety filter
+    -> stem keypoint confidence/depth/geometry quality guard
     -> keypoint depth + eye-in-hand calibration + E0509 FK
     -> stable base_link stem target
  -> /strawberry/detection/pick_pose
@@ -42,6 +43,7 @@ RealSense RGB + aligned depth
 | seg-pose 결합 | `strawberry_fusion_node.py` | 같은 과실의 mask와 keypoint 매칭 |
 | 3D 변환 | depth + hand-eye + E0509 FK | `base_link` 기준 줄기 좌표 |
 | 목표 안정화 | 최근 9개 KP0 중앙값 + 12mm spread 제한 | 흔들리는 target 발행 차단 |
+| 줄기 품질 검증 | KP confidence + depth + 3D segment geometry | 가림/오검출 target 접근 차단 |
 | 셀/타깃 순서 | `scan_executor_node.py` | root cell 및 logical subcell 순차 실행 |
 | 장애물 구성 | `curobo_planner_node.py` | whiteboard + 이웃 딸기 sphere |
 | pre-approach | cuRobo Cartesian planning | 충돌 회피 joint trajectory |
@@ -92,6 +94,8 @@ grasp -> pre-approach: TOOL -Z MoveLine
 - self-collision은 coarse sphere 오검출 때문에 현재 비활성 상태다.
 - place는 table collision 위험 때문에 현재 주 실험 경로에서 사용하지 않는다.
 - 목표 위치가 안정적이어도 pose 모델이 KP0를 일관되게 잘못 찍으면 옆 접근할 수 있다.
+  현재 quality guard는 명백한 저신뢰/비정상 geometry를 거부하지만, 일관된 오검출을
+  완전히 판별하지는 못한다.
 
 ## 6. 시뮬레이션 재생용 JSONL 로그
 
@@ -132,7 +136,9 @@ Perception/fusion:
 
 - `node_start`: model, calibration, stabilization parameter
 - `scene_positions_published`: 주변 ripe 과실 3D 위치
-- `stable_pick_target_published`: 안정화된 줄기 target, quaternion, sample 수, spread
+- `pick_target_rejected`: confidence/depth/mask match/stem geometry 기반 거부 사유
+- `stable_pick_target_published`: 안정화된 줄기 target, quaternion, sample 수, spread,
+  keypoint confidence/pixel/3D geometry/match evidence
 
 Scan/task:
 

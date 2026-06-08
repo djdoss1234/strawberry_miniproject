@@ -80,6 +80,8 @@ Failures that should become VLA/reobserve cases:
 - class becomes unstable at close range
 - gripper blocks the camera view
 - approach would require unsafe joint branch or collision-prone motion
+- all three stem keypoints are not visible with sufficient confidence
+- stem keypoint depth or 3-D segment geometry is implausible
 
 Suggested result codes:
 

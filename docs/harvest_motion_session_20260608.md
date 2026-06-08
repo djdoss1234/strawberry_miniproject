@@ -149,3 +149,60 @@ SW 셀의 다음 target을 즉시 전달한 구조적 불일치였다.
 ```
 
 셀 간 이동 및 전체 순회 종료 후 overview 복귀는 scan executor가 담당한다.
+
+## SW 추가 시도: 모션 성공, 실제 줄기 파지 실패
+
+런타임 로그:
+
+```text
+logs/runtime/2026-06-08/curobo_planner_node_20260608T115517-e65c9fb0.jsonl
+```
+
+관찰 결과:
+
+- SW scan pose에서 시작했다.
+- cuRobo pre-approach 계획, TOOL `+Z` 140mm 직선 진입, close,
+  TOOL `-Z` 140mm 직선 역주행, SW scan pose 복귀가 모두 완료됐다.
+- 실제로는 줄기를 제대로 잡지 못했다.
+- 따라서 이번 결과는 motion sequence 완료이지만 실제 수확 성공은 아니다.
+
+```text
+motion_result: SUCCESS
+harvest_result: GRASP_EMPTY / STEM_TARGET_MISS
+PICK COMPLETE: sequence completion only
+```
+
+planner 입력 target은 다음과 같았다.
+
+```text
+fusion target before wall clamp: approximately (-150, 703, 570)mm
+planner target after wall clamp:  (-150, 672, 575)mm
+```
+
+잎 가림 또는 pose keypoint 오검출이 유력하지만, 기존 JSONL에는 keypoint confidence,
+pixel 위치, 3D keypoint geometry가 없어 원인을 확정할 수 없었다. 모션을 더 깊게
+보내는 방식은 잘못된 목표로 충돌할 위험만 키우므로 적용하지 않는다.
+
+### 줄기 목표 품질 guard 추가
+
+fusion node가 좌표 안정성만 확인하던 구조에서, 실제 줄기 목표 신뢰도도 함께
+검사하도록 변경했다.
+
+- KP0/KP1 중 하나가 매칭된 ripe 과실 mask 내부에 있어야 한다.
+- 자동 pick에는 KP0/KP1/KP2가 모두 `confidence >= 0.60`이어야 한다.
+- 세 keypoint 모두 유효 depth를 가져야 한다.
+- KP0-KP1, KP1-KP2 길이는 각각 5~100mm 범위여야 한다.
+- KP0-KP2 전체 길이는 160mm 이하여야 한다.
+- KP1 fallback 파지를 제거하고 실제 파지 목표는 항상 KP0를 사용한다.
+- 불확실한 target은 접근하지 않고 `pick_target_rejected` JSONL event로 남긴다.
+- 발행 target에는 confidence, pixel, 3D keypoint, mask match evidence, HSV,
+  줄기 segment 길이를 함께 기록한다.
+
+이 guard는 가려진 줄기를 억지로 따는 기능이 아니다. 현재 rule-based pipeline이
+신뢰할 수 없는 줄기를 거부하고, 향후 재관측/VLA 대상으로 넘길 수 있게 만드는
+안전 장치다.
+
+```text
+Stem quality guard implementation: complete
+Physical validation after guard: pending
+```

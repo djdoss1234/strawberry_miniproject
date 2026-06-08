@@ -485,6 +485,37 @@ ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
   -p execute_marker_place_release:=true
 ```
 
+### 16:50 / 16:55 반복 시도: 실제 파지·분리 검증 부재와 stale tray 차단
+
+두 시도 모두 commit `fc8a437`에서 marker place preview를 켠 상태로 수행했다.
+
+| run_id | 사용자 물리 관찰 | 로그에서 확인되는 사실 | 최종 정지 원인 |
+| --- | --- | --- | --- |
+| `20260608T165005-ba59d38c` | 잎에 밀려 실제 파지 실패 | target 접근, gripper close, 직선 reverse retreat 완료 | tray localization age `974s`가 허용 `300s` 초과 |
+| `20260608T165503-d7ae2a59` | 그리퍼가 잡았으나 딸기가 줄기에서 분리되지 않음 | target 접근, gripper close, 직선 reverse retreat 완료 | tray localization age `1255s`가 허용 `300s` 초과 |
+
+이번 결과로 다음을 확인했다.
+
+- 현재 로그의 `grasp OK`는 실제 파지 또는 분리 성공이 아니라 **grasp 목표 자세 도달**
+  성공이다.
+- 그리퍼 명령과 retreat가 성공해도 잎 접촉, 빈 파지, 미분리 상태를 자동 판정하지
+  못한다.
+- 두 시도에서 place로 가지 않은 직접 원인은 실제 파지 실패 인지가 아니라
+  `MARKER_PLACE_BLOCKED: tray localization stale` 안전 검사였다.
+- stale/preview/place 실패 뒤 persistent sequence hold latch가 정상 동작하여,
+  planner restart 전까지 후속 pick target을 차단했다.
+- runtime JSONL은 `logs/` ignore 정책으로 로컬 실험 자산으로 보존되며 git에는
+  올리지 않는다.
+
+다음 최우선 구현은 retreat 후 `VERIFY_GRASP / VERIFY_DETACH` 단계다. 실제 성공
+근거가 없으면 place를 시작하지 않고 `GRASP_EMPTY`, `DETACH_FAIL`,
+`GRASP_UNVERIFIED` 중 하나로 종료해야 한다. 또한 로그 문구 `grasp OK`는 실제
+성공으로 오해되지 않도록 `GRASP_POSE_REACHED`로 변경한다.
+
+marker place를 다시 검증하려면 수확 직전에 tray localization을 갱신해야 한다.
+실제 release는 fresh tray JSON, 물리적 분리 확인, slot above clearance 확인을
+모두 만족한 단일 시도에서만 승인한다.
+
 다음 조건에서는 place와 자동 scan continuation을 차단하고 현재 자세에서 정지한다.
 
 - marker localization JSON 없음

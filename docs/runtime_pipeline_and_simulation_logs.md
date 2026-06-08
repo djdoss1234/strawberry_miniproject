@@ -27,6 +27,10 @@ RealSense RGB + aligned depth
  -> Doosan MoveLine TOOL +Z: 정지 후 최종 직선 진입
  -> RH-P12-RN-A close
  -> Doosan MoveLine TOOL -Z: 진입 경로 직선 역주행
+ -> [미구현] VERIFY_GRASP / VERIFY_DETACH
+ -> optional guarded marker place
+    -> overview -> tray-view -> marker slot above
+    -> explicit release 승인 시 descend/open/above
  -> cuRobo joint-space plan + MoveSplineJoint: 현재 cell의 pick 시작 scan pose 복귀
  -> /dsr01/curobo/pick_complete
  -> scan_executor_node가 같은 cell의 다음 target 또는 다음 cell 진행
@@ -53,6 +57,8 @@ RealSense RGB + aligned depth
 | 최종 진입 | Doosan `MoveLine` | TOOL `+Z` 직선 접근 |
 | 파지 | RH-P12-RN-A gripper service | close 명령, 실제 파지 성공은 별도 검증 필요 |
 | 초기 후퇴 | Doosan `MoveLine` | TOOL `-Z`로 진입 경로 역주행 |
+| 파지/분리 검증 | 현재 미구현 | 사람 관찰 외 자동 성공 근거 없음 |
+| marker place | fresh tray JSON + cuRobo + MoveLine | 기본 비활성, preview/release 명시 승인형 |
 | scan pose 복귀 | cuRobo joint-space + `MoveSplineJoint` | 같은 셀의 다음 target을 위해 pick 시작 자세로 복귀 |
 
 ## 3. cuRobo를 사용하는 구간
@@ -97,7 +103,11 @@ grasp -> pre-approach: TOOL -Z MoveLine
   같은 셀의 다음 target 전달과 셀 이동/최종 overview 복귀는 scan executor가 담당한다.
 - 실제 파지 성공은 현재 영상/사람 관찰로 별도 판정해야 한다.
 - self-collision은 coarse sphere 오검출 때문에 현재 비활성 상태다.
-- place는 table collision 위험 때문에 현재 주 실험 경로에서 사용하지 않는다.
+- marker place는 guarded optional 경로로 연결되었지만, tray localization이 300초보다
+  오래되거나 release가 명시 승인되지 않으면 place를 차단하고 현재 자세에서 정지한다.
+- 현재 `grasp OK` 로그는 grasp 목표 자세 도달을 뜻하며 실제 파지/분리 성공이 아니다.
+- retreat 후 `VERIFY_GRASP / VERIFY_DETACH`가 없어 빈 파지나 미분리 상태에서도
+  fresh tray target이 있으면 place 단계로 진행할 수 있다.
 - 잎은 현재 perception class 및 collision world에 포함되지 않는다. 따라서 과실 sphere와
   whiteboard를 피한 경로라도 실제 잎과 접촉할 수 있다.
 - 목표 위치가 안정적이어도 pose 모델이 KP0를 일관되게 잘못 찍으면 옆 접근할 수 있다.
@@ -164,6 +174,8 @@ Planning/execution:
 - `motion_result`: controller 응답과 현재 joints
 - `grasp_approach_complete`: 실제 사용한 offset/orientation/approach direction
 - `gripper_command`: close 명령
+- `marker_place_target_loaded`: tray JSON, age, slot, release/above target
+- `pick_sequence_hold_latched`: preview/place/recovery 실패 후 후속 pick 차단 사유
 - `pick_sequence_complete`: `SEQUENCE_COMPLETE_UNVERIFIED`
 
 ## 7. 시뮬레이션 환경에서 사용하는 방법

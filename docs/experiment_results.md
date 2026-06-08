@@ -98,3 +98,23 @@ SUCCESS
 ```
 
 또한 run별로 commit hash, detector weight ID, calibration ID, scene ID, planner policy, collision object 목록, tray pose source, 영상/rosbag 경로를 함께 저장한다.
+
+## 2026-06-08 SW Harvest And Marker Place Observation
+
+실기에서 SW target 접근, gripper close, TOOL `-Z` 직선 retreat까지 반복 수행했다.
+사용자 관찰 기준으로 한 시도는 잎에 밀려 파지하지 못했고, 다음 시도는 그리퍼가
+잡았지만 딸기가 줄기에서 분리되지 않았다.
+
+두 시도 모두 planner 로그상 접근/close/retreat는 완료되었으나, 실제 파지·분리
+성공을 자동 검증하지 못했다. 이후 marker place는 tray localization age가 각각
+`974s`, `1255s`로 허용치 `300s`를 초과하여 안전 차단되었다.
+
+따라서 이번 결과는 수확 성공 또는 place 성공으로 집계하지 않는다. 확인된 성과는
+다음과 같다.
+
+- SW grasp target 접근과 직선 reverse retreat 반복 실행
+- stale tray localization에 대한 place 안전 차단
+- place 실패 후 후속 pick을 막는 persistent sequence hold latch 동작
+
+다음 평가 전에는 `VERIFY_GRASP / VERIFY_DETACH` 결과 코드를 구현하고, fresh tray
+localization을 사용한 단일 release 승인 실험을 수행해야 한다.

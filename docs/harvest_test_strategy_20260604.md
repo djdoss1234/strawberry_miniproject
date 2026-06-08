@@ -82,6 +82,11 @@ Failures that should become VLA/reobserve cases:
 - approach would require unsafe joint branch or collision-prone motion
 - all three stem keypoints are not visible with sufficient confidence
 - stem keypoint depth or 3-D segment geometry is implausible
+- physical leaf lies inside the 15.8cm gripper-part approach corridor
+
+Until leaf segmentation or RGB-D corridor occupancy checking is implemented,
+a visually leaf-occluded target must be labeled `OCCLUDED_REOBSERVE_REQUIRED`
+instead of being forced through repeated motion-planning retries.
 
 Suggested result codes:
 

@@ -272,12 +272,16 @@ class CuroboPlanner(Node):
                 "grasp_quat_retry_variants": GRASP_QUAT_RETRY_VARIANTS,
                 "operational_joint_limits_deg": OPERATIONAL_JOINT_LIMITS_DEG,
             },
+            unmodeled_collision_classes=["leaf", "stem", "support_string"],
         )
         base_approach_dir = np.array(quat_rotate_vec(WALL_QUAT_WXYZ, [0.0, 0.0, 1.0]))
         base_elevation_deg = float(np.degrees(np.arcsin(np.clip(base_approach_dir[2], -1.0, 1.0))))
         self.get_logger().info(
             f"  ENV_CUBOIDS={len(self.static_cuboids)}  "
             f"SELF_COLLISION={USE_CUROBO_SELF_COLLISION}")
+        self.get_logger().warn(
+            "Leaf/stem geometry is not in the cuRobo world; visually occluded "
+            "targets require reobserve/skip instead of forced approach")
         self.get_logger().info(
             f"  WALL_QUAT_WXYZ={WALL_QUAT_WXYZ} "
             f"approach_dir={np.round(base_approach_dir, 4).tolist()} "
@@ -984,29 +988,34 @@ class CuroboPlanner(Node):
         used_grasp_variant = None
         used_approach_dir = None
         grasp_attempt = 0
-        for grasp_offset in grasp_retry_offsets:
-            for quat_frame, axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
+        # Pre-approach depends only on orientation, not grasp offset. The old
+        # offset-first loop replanned the exact same pre-approach up to four
+        # times per orientation, adding seconds of avoidable latency.
+        for quat_frame, axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
+            q_delta = quat_from_axis_angle(axis, np.deg2rad(quat_deg))
+            if quat_frame == "base":
+                q_retry = quat_multiply_wxyz(q_delta, WALL_QUAT_WXYZ)
+            else:
+                q_retry = quat_multiply_wxyz(WALL_QUAT_WXYZ, q_delta)
+            approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
+            ee_pre = straw - (PRE_APPROACH_OFFSET + GRIPPER_LEN) * approach_dir
+            r_pre_for_variant = self.plan(
+                self.current_joints, ee_pre.tolist(), q_retry, num_ik_seeds=64
+            )
+            if r_pre_for_variant is None:
+                grasp_attempt += len(grasp_retry_offsets)
+                continue
+            pre_joints = r_pre_for_variant[0][-1].tolist()
+
+            for grasp_offset in grasp_retry_offsets:
                 grasp_attempt += 1
-                q_delta = quat_from_axis_angle(axis, np.deg2rad(quat_deg))
-                if quat_frame == "base":
-                    q_retry = quat_multiply_wxyz(q_delta, WALL_QUAT_WXYZ)
-                else:
-                    q_retry = quat_multiply_wxyz(WALL_QUAT_WXYZ, q_delta)
-                approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
-                # pre-approach: 줄기에서 PRE_APPROACH_OFFSET만큼 앞
-                ee_pre = straw - (PRE_APPROACH_OFFSET + GRIPPER_LEN) * approach_dir
-                r_pre = self.plan(self.current_joints, ee_pre.tolist(), q_retry,
-                                  num_ik_seeds=64)
-                if r_pre is None:
-                    continue
-                pre_joints = r_pre[0][-1].tolist()
                 # final grasp: pre-approach에서 grasp_offset까지 직선 접근
                 ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
                 r_grasp = self.plan(pre_joints, ee_g_try.tolist(), q_retry,
                                     num_ik_seeds=32)
                 if r_grasp is None:
                     continue
-                ret_pre   = r_pre
+                ret_pre   = r_pre_for_variant
                 ret_grasp = r_grasp
                 used_grasp_offset = grasp_offset
                 used_grasp_variant = (quat_frame, axis, quat_deg)

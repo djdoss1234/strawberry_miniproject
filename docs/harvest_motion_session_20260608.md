@@ -234,3 +234,47 @@ fusion은 정상 target을 발행했지만 scan executor가 약 0.18초 먼저 d
 scan_dwell_sec default: 5.0s
 recommended SW test override: scan_dwell_sec:=5.0
 ```
+
+## SW 잔여 과실 시도: 잎 접촉으로 파지 실패
+
+실행 로그:
+
+```text
+logs/runtime/2026-06-08/curobo_planner_node_20260608T123424-15a5acb2.jsonl
+logs/runtime/2026-06-08/strawberry_fusion_node_20260608T123424-cd862288.jsonl
+```
+
+관찰:
+
+- target은 실행 전부터 일관되게 약 `(-347, 685, 458)mm`로 발행됐다.
+- scan executor가 다른 target으로 갑자기 전환한 것은 아니다.
+- planner는 첫 6개 endpoint 후보가 IK 실패한 뒤 7번째 후보에서 성공했다.
+- planning에 약 17초가 걸린 뒤 115mm 직선 진입을 수행했다.
+- 15.8cm 그리퍼 연장 파츠가 진입 중 잎에 닿아 잎과 과실을 함께 밀었고,
+  최종 줄기 파지에 실패했다.
+
+현재 collision world는 whiteboard와 검출된 과실 중심 sphere만 포함한다. 잎은
+segmentation class나 collision geometry로 등록되지 않으므로 cuRobo는 잎 접촉을
+예측하거나 회피할 수 없다.
+
+```text
+planner result: valid for current modeled world
+physical harvest result: OCCLUDED_REOBSERVE_REQUIRED / GRASP_EMPTY
+missing scene element: leaf geometry
+```
+
+### 중복 pre-approach 계획 제거
+
+기존 후보 탐색 순서는 offset마다 동일한 pre-approach를 다시 계획했다.
+
+```text
+old: offset 4개 × orientation 3개마다 pre-approach 재계획
+new: orientation별 pre-approach 1회 계획 후 offset endpoint만 순차 검증
+```
+
+이번 로그와 같은 첫 orientation의 세 번째 offset 성공 사례에서는 동일한
+pre-approach 계획 횟수가 3회에서 1회로 줄어든다. 물리 접근 속도를 높인 것이 아니라
+실행 전 중복 GPU planning latency를 제거한 변경이다.
+
+잎 접촉 문제는 이 최적화로 해결되지 않는다. 다음 안전 개선은 RGB-D 접근 corridor
+occupancy 검사 또는 leaf segmentation을 통해 잎/미지 물체를 scene에 반영하는 것이다.

@@ -288,12 +288,18 @@ public:
             std::bind(&GripperServiceNode::handle_close, this,
                      std::placeholders::_1, std::placeholders::_2));
 
+        srv_read_position_ = this->create_service<std_srvs::srv::Trigger>(
+            prefix + "/read_position",
+            std::bind(&GripperServiceNode::handle_read_position, this,
+                     std::placeholders::_1, std::placeholders::_2));
+
         position_sub_ = this->create_subscription<std_msgs::msg::Int32>(
             prefix + "/position_cmd", 10,
             std::bind(&GripperServiceNode::handle_position_cmd, this, std::placeholders::_1));
 
         RCLCPP_INFO(this->get_logger(), "Gripper service node started (namespace: %s)", ns.c_str());
-        RCLCPP_INFO(this->get_logger(), "  Services: %s/open, %s/close", prefix.c_str(), prefix.c_str());
+        RCLCPP_INFO(this->get_logger(), "  Services: %s/open, %s/close, %s/read_position",
+                    prefix.c_str(), prefix.c_str(), prefix.c_str());
         RCLCPP_INFO(this->get_logger(), "  Topics: %s/position_cmd (sub), %s/stroke (pub)",
                     prefix.c_str(), prefix.c_str());
     }
@@ -362,6 +368,17 @@ private:
         RCLCPP_INFO(this->get_logger(), "Gripper close result: %s", message.c_str());
     }
 
+    void handle_read_position(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        RCLCPP_INFO(this->get_logger(), "Read present position request received");
+        int position = worker_->read_present_position();
+        response->success = true;
+        response->message = std::to_string(position);
+        RCLCPP_INFO(this->get_logger(), "Present position read: %d", position);
+    }
+
     void handle_position_cmd(const std_msgs::msg::Int32::SharedPtr msg) {
         int position = msg->data;
         RCLCPP_INFO(this->get_logger(), "Position command received: %d", position);
@@ -379,6 +396,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr stroke_pub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_open_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_close_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_read_position_;
     rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr position_sub_;
 };
 

@@ -62,6 +62,13 @@ OPEN_GRIPPER_ON_PICK_START  = False  # 스캔 이동 중 이미 600으로 설정
 GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (0=완전열림, 700=완전닫힘) — 이웃 줄기 걸림 방지
 GRIPPER_APPROACH_WAIT_SEC   = 1.5  # 접근 포지션 완료 대기 (plan과 병렬)
 
+# ── 파지 검증 ─────────────────────────────────────────────────────────────────
+# RH-P12-RN-A: 0=fully open, 700=fully closed
+# 줄기가 잡히면 jaw가 중간에 멈춤(예: ~600~650). 아무것도 없으면 700까지 닫힘.
+# 임계값 이상이면 GRASP_EMPTY 판정.
+GRASP_EMPTY_POSITION_THRESHOLD = 665   # pos >= 665 → fully closed → nothing grabbed
+GRASP_VERIFY_TIMEOUT_SEC       = 5.0   # read_position 서비스 타임아웃 (hardware read ~1.5s 포함)
+
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
 OVERVIEW_JOINTS_DEG = [87.98, -94.92, 129.89, 175.94, -31.34, 93.42]  # 스캔 기준 포즈
@@ -274,6 +281,8 @@ class CuroboPlanner(Node):
             Trigger, "/dsr01/gripper/open", callback_group=self.service_cb_group)
         self.cli_gripper_close = self.create_client(
             Trigger, "/dsr01/gripper/close", callback_group=self.service_cb_group)
+        self.cli_gripper_read_pos = self.create_client(
+            Trigger, "/dsr01/gripper/read_position", callback_group=self.service_cb_group)
 
         self.get_logger().info("cuRobo Planner Ready!")
         self.get_logger().info(f"Runtime JSONL: {self.runtime_log.path}")
@@ -522,6 +531,39 @@ class CuroboPlanner(Node):
         t0 = time.time()
         while not future.done() and (time.time() - t0) < 10.0:
             time.sleep(0.1)
+
+    def _verify_grasp(self):
+        """
+        그리퍼 실제 현재 위치를 읽어 파지 여부를 판정.
+        /dsr01/gripper/read_position 서비스 (Trigger) 호출 → message에 int 위치값.
+
+        Returns (result_code, present_position, reason):
+          GRASP_EMPTY          — pos >= GRASP_EMPTY_POSITION_THRESHOLD (jaw 완전 닫힘, 빈 파지)
+          GRASP_CONTACT_DETECTED — 0 <= pos < threshold (jaw 중간 정지, 줄기 접촉 추정)
+          GRASP_UNVERIFIED     — 서비스 미응답/가상 모드/파싱 실패
+        """
+        if not self.cli_gripper_read_pos.wait_for_service(timeout_sec=0.5):
+            return "GRASP_UNVERIFIED", -1, "read_position service unavailable"
+        future = self.cli_gripper_read_pos.call_async(Trigger.Request())
+        t0 = time.time()
+        while not future.done() and (time.time() - t0) < GRASP_VERIFY_TIMEOUT_SEC:
+            time.sleep(0.05)
+        if not future.done():
+            return "GRASP_UNVERIFIED", -1, "read_position timeout"
+        res = future.result()
+        if not res or not res.success:
+            return "GRASP_UNVERIFIED", -1, "read_position service error"
+        try:
+            position = int(res.message)
+        except (ValueError, AttributeError):
+            return "GRASP_UNVERIFIED", -1, f"parse error: {res.message!r}"
+        if position < 0:
+            return "GRASP_UNVERIFIED", position, "hardware read failed (virtual mode or serial error)"
+        if position >= GRASP_EMPTY_POSITION_THRESHOLD:
+            return "GRASP_EMPTY", position, (
+                f"fully closed (pos={position} >= threshold={GRASP_EMPTY_POSITION_THRESHOLD})")
+        return "GRASP_CONTACT_DETECTED", position, (
+            f"jaw stopped at pos={position} < threshold={GRASP_EMPTY_POSITION_THRESHOLD}")
 
     # ── 플래닝 ────────────────────────────────────────────────────────────────
 
@@ -1309,13 +1351,13 @@ class CuroboPlanner(Node):
             else ret_grasp[0][-1].tolist()
         )
         self.get_logger().info(
-            f"grasp OK — offset={used_grasp_offset:+.3f}m "
+            f"GRASP_POSE_REACHED — offset={used_grasp_offset:+.3f}m "
             f"variant={used_grasp_variant} "
             f"approach_dir={np.round(used_approach_dir, 4).tolist()} "
             f"elevation={np.degrees(np.arcsin(np.clip(used_approach_dir[2], -1.0, 1.0))):+.1f}deg "
             f"(attempt {grasp_attempt}/{n_offsets * n_quats})")
         self.runtime_log.log(
-            "grasp_approach_complete",
+            "grasp_pose_reached",
             grasp_offset_m=used_grasp_offset,
             grasp_variant=used_grasp_variant,
             approach_dir=used_approach_dir,
@@ -1329,8 +1371,21 @@ class CuroboPlanner(Node):
         self.call_trigger(self.cli_gripper_close)
         time.sleep(2.0)
 
+        # 3b. VERIFY_GRASP — 실제 그리퍼 위치를 읽어 파지 여부 판정
+        grasp_result, present_pos, grasp_reason = self._verify_grasp()
+        self.get_logger().info(
+            f"VERIFY_GRASP: {grasp_result} present_pos={present_pos} — {grasp_reason}")
+        self.runtime_log.log(
+            "verify_grasp",
+            result_code=grasp_result,
+            present_position=present_pos,
+            reason=grasp_reason,
+            close_command_pos=700,
+            empty_threshold=GRASP_EMPTY_POSITION_THRESHOLD,
+        )
+
         # 4. 파지 진입 경로를 동일 자세로 역주행해 먼저 벽/과실에서 이탈한다.
-        # 새 Cartesian retreat 목표를 다시 IK로 풀면 J1 반대 branch를 선택할 수 있다.
+        # grasp_result 에 관계없이 항상 retreat 먼저 실행 (벽 앞에 멈춤 방지).
         self.get_logger().info(
             f"4 straight reverse retreat — retracing {final_approach_distance*1000:.1f}mm")
         if not self.execute_tool_z_line(
@@ -1349,8 +1404,36 @@ class CuroboPlanner(Node):
             else grasp_joints
         )
 
+        # 4b. VERIFY_DETACH — 현재 센서로는 분리 여부 확인 불가, 상태만 기록
+        detach_result = "DETACH_UNVERIFIED"
+        detach_reason = "no sensor available; straight reverse retreat succeeded"
+        self.runtime_log.log(
+            "verify_detach",
+            result_code=detach_result,
+            grasp_result=grasp_result,
+            reason=detach_reason,
+        )
+
+        # Place 게이트: 파지 증거가 없으면 place 건너뛰고 scan 복귀
+        # GRASP_CONTACT_DETECTED만 place 허용.
+        # GRASP_EMPTY / GRASP_UNVERIFIED → 불확실 → 기본값 place 차단.
+        _allow_place = (grasp_result == "GRASP_CONTACT_DETECTED")
+        if not _allow_place:
+            place_block_reason = (
+                "GRASP_EMPTY: jaw fully closed, nothing grabbed"
+                if grasp_result == "GRASP_EMPTY"
+                else "GRASP_UNVERIFIED: sensor read unavailable"
+            )
+            self.get_logger().warn(
+                f"PLACE_GATE_BLOCKED ({grasp_result}): {place_block_reason}")
+            self.runtime_log.log(
+                "place_gate_blocked",
+                grasp_result=grasp_result,
+                reason=place_block_reason,
+            )
+
         return_start_joints = retreat_joints
-        if self._enable_marker_place:
+        if self._enable_marker_place and _allow_place:
             place_status, place_joints = self._execute_marker_place_after_retreat(
                 retreat_joints)
             if place_status != "success":
@@ -1395,16 +1478,23 @@ class CuroboPlanner(Node):
         self._clear_neighbor_obstacles()
         self._reset_gripper()  # 다음 파지를 위해 approach 위치(600)로 복귀
         self.pick_complete_pub.publish(Empty())
+        sequence_result_code = (
+            "DETACH_SUCCESS_UNVERIFIED"
+            if grasp_result == "GRASP_CONTACT_DETECTED"
+            else grasp_result   # GRASP_EMPTY or GRASP_UNVERIFIED
+        )
         self.runtime_log.log(
             "pick_sequence_complete",
-            result_code="SEQUENCE_COMPLETE_UNVERIFIED",
+            result_code=sequence_result_code,
+            grasp_result=grasp_result,
+            detach_result=detach_result,
             return_pose="pick_start_scan_pose",
             marker_place_enabled=self._enable_marker_place,
             marker_place_release_executed=(
                 self._enable_marker_place and self._execute_marker_place_release),
             current_joints_rad=self.current_joints,
         )
-        self.get_logger().info("=== PICK COMPLETE ===")
+        self.get_logger().info(f"=== PICK COMPLETE ({sequence_result_code}) ===")
 
 
 def main():

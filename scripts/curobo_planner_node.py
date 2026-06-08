@@ -31,7 +31,7 @@ from runtime_jsonl_logger import RuntimeJsonlLogger
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
 GRASP_OFFSET        = +0.030   # TCP↔berry 거리 (m) — 조정 시 extension sphere 벽 간섭 주의
 GRASP_RETRY_OFFSETS  = [0.040, 0.050, 0.065, 0.080]
-GRASP_Z_BIAS         = +0.005   # KP0 기준 Z 오프셋 (양수=위, 음수=아래)
+GRASP_Z_BIAS         = +0.015   # KP0 기준 Z 오프셋 (기존 +5mm에서 10mm 추가 상승)
 PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
 PRE_APPROACH_SETTLE_SEC = 1.0  # 자세/파지 위치 확정 후 완전 정지
 FINAL_APPROACH_VEL_MM_S = 20.0 # pre-approach → grasp TOOL +Z 저속 직선 진입
@@ -948,11 +948,13 @@ class CuroboPlanner(Node):
 
         self.get_logger().info(
             f"=== PICK 딸기 raw=({raw_straw[0]*1000:.0f},{raw_straw[1]*1000:.0f},{raw_straw[2]*1000:.0f})mm "
-            f"grasp=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm ===")
+            f"grasp=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
+            f"z_bias={GRASP_Z_BIAS*1000:+.0f}mm ===")
         self.runtime_log.log(
             "pick_target_prepared",
             raw_target_m=raw_straw,
             grasp_target_m=straw,
+            grasp_z_bias_m=GRASP_Z_BIAS,
             wall_y_clamped=bool(float(p.y) > WALL_SURFACE_Y_M),
         )
 

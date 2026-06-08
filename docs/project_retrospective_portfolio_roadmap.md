@@ -159,7 +159,7 @@ ee_retreat  = straw - (RETREAT_OFFSET + GRIPPER_LEN) * WALL_UNIT
 | `APPROACH_OFFSET` | 0.15 m | 벽면 대상 전방 접근 여유 |
 | `GRASP_RETRY_OFFSETS` | -0.05, -0.04, -0.03, 0.0 m | 파지 깊이 후보 |
 | `RETREAT_OFFSET` | 0.36 m | place 이송 전에 충분히 빠짐 |
-| `GRASP_Z_BIAS` | -0.025 m | 검출 중심보다 낮춘 몸통 파지 보정 |
+| `GRASP_Z_BIAS` | +0.015 m | KP0보다 15mm 위의 줄기를 목표로 하는 파지 보정 |
 | `GRIPPER_LEN` | 0.160 m | ee link에서 TCP까지의 거리 |
 
 모든 파지 orientation을 벽면 대응 자세로 고정하고, far-right 대상에는 깊은 IK retry를 생략한다. left target에는 home과 같은 safe transfer 자세를 통과하도록 하는 휴리스틱이 들어가 있다.

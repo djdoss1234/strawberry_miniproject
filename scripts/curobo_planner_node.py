@@ -178,6 +178,8 @@ class CuroboPlanner(Node):
         self.service_cb_group = rclpy.callback_groups.ReentrantCallbackGroup()
         self.current_joints = None
         self._pick_busy = False
+        self._sequence_hold_reason = None
+        self._last_sequence_hold_warn_sec = 0.0
         self._marker_place_slot_idx = 0
         self.static_cuboids = load_environment_cuboids()
         self.dynamic_cuboids = []
@@ -1103,7 +1105,26 @@ class CuroboPlanner(Node):
 
     # ── Pick 시퀀스 ────────────────────────────────────────────────────────────
 
+    def _hold_pick_sequence(self, reason: str):
+        self._sequence_hold_reason = reason
+        self.runtime_log.log(
+            "pick_sequence_hold_latched",
+            reason=reason,
+            current_joints_rad=self.current_joints,
+        )
+        self.get_logger().warn(
+            f"PICK_SEQUENCE_HOLD_LATCHED reason={reason}; "
+            "new pick targets are blocked until planner restart")
+
     def pick_pose_cb(self, msg: PoseStamped):
+        if self._sequence_hold_reason is not None:
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            if now_sec - self._last_sequence_hold_warn_sec >= 5.0:
+                self._last_sequence_hold_warn_sec = now_sec
+                self.get_logger().warn(
+                    f"Pick target ignored: sequence hold "
+                    f"({self._sequence_hold_reason})")
+            return
         if self.current_joints is None:
             self.get_logger().warn("No joint state yet")
             return
@@ -1318,7 +1339,7 @@ class CuroboPlanner(Node):
                 "ABORT: straight reverse retreat failed — holding current pose; "
                 "overview motion blocked")
             self._clear_neighbor_obstacles()
-            self.pick_complete_pub.publish(Empty())
+            self._hold_pick_sequence("straight_reverse_retreat_failed")
             return
 
         time.sleep(STRAIGHT_RETREAT_SETTLE_SEC)
@@ -1347,6 +1368,7 @@ class CuroboPlanner(Node):
                 self.get_logger().warn(
                     f"PICK_SEQUENCE_HOLD place_status={place_status}; "
                     "pick_complete not published, automatic scan paused")
+                self._hold_pick_sequence(f"marker_place_{place_status}")
                 return
             return_start_joints = place_joints
 
@@ -1367,6 +1389,7 @@ class CuroboPlanner(Node):
                 result_code="RETURN_TO_SCAN_FAILED",
                 current_joints_rad=self.current_joints,
             )
+            self._hold_pick_sequence("return_to_scan_failed")
             return
 
         self._clear_neighbor_obstacles()

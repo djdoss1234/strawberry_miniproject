@@ -496,3 +496,36 @@ ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
 
 `PLACE_SEQUENCE_COMPLETE_UNVERIFIED`는 경로와 release 명령이 끝났다는 뜻이며,
 딸기가 실제 slot 안에 놓였다는 성공 판정은 아니다.
+
+### 16:37 marker place preview 실기 관찰
+
+- 사용자가 물리적으로 딸기 분리를 확인한 뒤 marker place preview를 수행했다.
+- 최신 tray localization 파일을 정상적으로 읽었으며, slot0 above 목표는
+  `base_link xyz=[471.6, -311.5, 726.3]mm`로 계산되었다.
+- 로봇은 overview와 tray-view를 경유해 slot0 above에 도달했다.
+- 계란판 마커는 eye-in-hand 영상에서 그리퍼 사이로 보였으므로, 이번 정지는
+  마커 가림이나 좌표 미검출 때문이 아니다.
+- 실행 파라미터가 `execute_marker_place_release:=false`였기 때문에
+  `MARKER_PLACE_PREVIEW_HOLD` 상태에서 의도적으로 정지했다.
+- `Fusion Detection` 화면은 딸기 검출 overlay이며 tray 15-slot 좌표를 표시하는
+  화면이 아니다. tray 좌표 로딩 여부는 planner 로그와 tray localization 결과로
+  확인한다.
+
+preview hold 이후에도 fusion node가 새 pick target을 계속 발행하여, planner가
+tray pose에서 새로운 수확 계획을 시작할 수 있는 문제가 확인되었다. 이를 막기
+위해 다음 상태에서 planner restart 전까지 새 pick target을 거부하는 persistent
+sequence hold latch를 추가했다.
+
+- marker place preview hold
+- marker place 실패
+- straight reverse retreat 실패
+- pick-start scan pose 복귀 실패
+
+실제 release 단계는 slot above의 물리 clearance를 확인한 뒤 아래 파라미터로만
+승인한다.
+
+```bash
+ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
+  -p enable_marker_place_sequence:=true \
+  -p execute_marker_place_release:=true
+```

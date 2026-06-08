@@ -153,6 +153,11 @@ ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
   -p execute_marker_place_release:=false
 ```
 
+Preview mode는 marker-derived slot above에서 의도적으로 정지합니다. 이때
+`Fusion Detection` 창에는 tray slot 좌표가 표시되지 않으며, planner 로그의
+`MARKER_PLACE_ABOVE`로 좌표 로딩과 도달 여부를 확인합니다. Preview hold나 place
+실패 후에는 planner를 재시작하기 전까지 새 pick target을 차단합니다.
+
 단일 slot above 검증 후에만 실제 release를 명시적으로 승인합니다.
 
 ```bash

@@ -25,6 +25,7 @@ from curobo.types.robot import JointState as CuroboJointState, RobotConfig
 from curobo.types.math import Pose
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
 from curobo.geom.types import WorldConfig, Cuboid, Sphere
+from runtime_jsonl_logger import RuntimeJsonlLogger
 
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
@@ -169,6 +170,7 @@ class CuroboPlanner(Node):
     def __init__(self):
         super().__init__("curobo_planner_node")
 
+        self.runtime_log = RuntimeJsonlLogger(self.get_name())
         self.service_cb_group = rclpy.callback_groups.ReentrantCallbackGroup()
         self.current_joints = None
         self._pick_busy = False
@@ -226,6 +228,12 @@ class CuroboPlanner(Node):
         self.create_subscription(
             Float64MultiArray, "/strawberry/detection/scene_positions", self._scene_cb, 10,
             callback_group=self.service_cb_group)
+        self.create_subscription(
+            String, "/strawberry/scan/status", self._scan_status_cb, 10,
+            callback_group=self.service_cb_group)
+        self.create_subscription(
+            String, "/strawberry/exploration/set_cell_state", self._cell_state_cb, 10,
+            callback_group=self.service_cb_group)
 
         self.pick_complete_pub = self.create_publisher(Empty, "/dsr01/curobo/pick_complete", 10)
         self.gripper_pos_pub = self.create_publisher(Int32, "/dsr01/gripper/position_cmd", 10)
@@ -245,6 +253,26 @@ class CuroboPlanner(Node):
             Trigger, "/dsr01/gripper/close", callback_group=self.service_cb_group)
 
         self.get_logger().info("cuRobo Planner Ready!")
+        self.get_logger().info(f"Runtime JSONL: {self.runtime_log.path}")
+        self.runtime_log.log(
+            "node_start",
+            pipeline_role="motion_planning_and_execution",
+            environment_yaml=ENVIRONMENT_YAML,
+            environment_cuboids=[
+                {"name": c.name, "pose": c.pose, "dims": c.dims}
+                for c in self.static_cuboids
+            ],
+            parameters={
+                "grasp_retry_offsets_m": GRASP_RETRY_OFFSETS,
+                "grasp_z_bias_m": GRASP_Z_BIAS,
+                "pre_approach_offset_m": PRE_APPROACH_OFFSET,
+                "gripper_len_m": GRIPPER_LEN,
+                "wall_surface_y_m": WALL_SURFACE_Y_M,
+                "wall_quat_wxyz": WALL_QUAT_WXYZ,
+                "grasp_quat_retry_variants": GRASP_QUAT_RETRY_VARIANTS,
+                "operational_joint_limits_deg": OPERATIONAL_JOINT_LIMITS_DEG,
+            },
+        )
         base_approach_dir = np.array(quat_rotate_vec(WALL_QUAT_WXYZ, [0.0, 0.0, 1.0]))
         base_elevation_deg = float(np.degrees(np.arcsin(np.clip(base_approach_dir[2], -1.0, 1.0))))
         self.get_logger().info(
@@ -327,6 +355,15 @@ class CuroboPlanner(Node):
             f"World updated ({reason}): static={len(self.static_cuboids)} "
             f"dynamic={len(self.dynamic_cuboids)} "
             f"neighbor_spheres={len(self.neighbor_spheres)}")
+        self.runtime_log.log(
+            "collision_world_update",
+            reason=reason,
+            cuboids=[{"name": c.name, "pose": c.pose, "dims": c.dims} for c in cuboids],
+            neighbor_spheres=[
+                {"name": s.name, "pose": s.pose, "radius": s.radius}
+                for s in self.neighbor_spheres
+            ],
+        )
 
     def _scene_cb(self, msg: Float64MultiArray) -> None:
         data = msg.data
@@ -334,6 +371,13 @@ class CuroboPlanner(Node):
             np.array([data[i], data[i+1], data[i+2]])
             for i in range(0, len(data) - 2, 3)
         ]
+        self.runtime_log.log("scene_positions_received", positions_m=self._scene_positions)
+
+    def _scan_status_cb(self, msg: String) -> None:
+        self.runtime_log.log("scan_status", text=msg.data)
+
+    def _cell_state_cb(self, msg: String) -> None:
+        self.runtime_log.log("cell_state", text=msg.data)
 
     def _register_neighbor_obstacles(self, target_pos: np.ndarray) -> None:
         spheres = []
@@ -550,10 +594,37 @@ class CuroboPlanner(Node):
             traj = result.get_interpolated_plan().position.cpu().numpy()
             traj = self.normalize_trajectory_equivalents(traj, "Cartesian plan")
             if not self.trajectory_in_operational_limits(traj, "Cartesian plan"):
+                self.runtime_log.log(
+                    "curobo_plan_rejected",
+                    planner="cartesian",
+                    reason="operational_joint_limits",
+                    start_joints_rad=start_joints,
+                    target_pos_m=target_pos,
+                    target_quat_wxyz=target_quat_wxyz,
+                    trajectory_rad=traj,
+                )
                 return None
             if not self.trajectory_has_no_spline_jumps(traj, "Cartesian plan"):
+                self.runtime_log.log(
+                    "curobo_plan_rejected",
+                    planner="cartesian",
+                    reason="spline_jump",
+                    start_joints_rad=start_joints,
+                    target_pos_m=target_pos,
+                    target_quat_wxyz=target_quat_wxyz,
+                    trajectory_rad=traj,
+                )
                 return None
             if not self.trajectory_has_reasonable_swing(traj, start_joints, "Cartesian plan"):
+                self.runtime_log.log(
+                    "curobo_plan_rejected",
+                    planner="cartesian",
+                    reason="joint_swing",
+                    start_joints_rad=start_joints,
+                    target_pos_m=target_pos,
+                    target_quat_wxyz=target_quat_wxyz,
+                    trajectory_rad=traj,
+                )
                 return None
             motion_time = float(result.motion_time.item())
             end_deg = [f"{np.rad2deg(v):.1f}" for v in traj[-1]]
@@ -561,6 +632,16 @@ class CuroboPlanner(Node):
                 f"Plan OK {dt:.0f}ms {traj.shape[0]}pts {motion_time:.2f}s | "
                 f"goal={[f'{v*1000:.0f}' for v in target_pos]}mm | "
                 f"end_J=[{', '.join(end_deg)}]°")
+            self.runtime_log.log(
+                "curobo_plan_success",
+                planner="cartesian",
+                planning_latency_ms=dt,
+                motion_time_sec=motion_time,
+                start_joints_rad=start_joints,
+                target_pos_m=target_pos,
+                target_quat_wxyz=target_quat_wxyz,
+                trajectory_rad=traj,
+            )
             return traj, motion_time
         else:
             status = str(getattr(result, "status", "UNKNOWN"))
@@ -571,6 +652,15 @@ class CuroboPlanner(Node):
                 f"start_J=[{', '.join(start_deg)}]°")
             if "INVALID_START_STATE_WORLD_COLLISION" in status:
                 self.diagnose_start_world_collision(start_joints, "Cartesian plan")
+            self.runtime_log.log(
+                "curobo_plan_fail",
+                planner="cartesian",
+                status=status,
+                planning_latency_ms=dt,
+                start_joints_rad=start_joints,
+                target_pos_m=target_pos,
+                target_quat_wxyz=target_quat_wxyz,
+            )
             return None
 
     def plan_js(self, start_joints, target_joints_rad, label, skip_swing_check=False):
@@ -594,13 +684,29 @@ class CuroboPlanner(Node):
             traj = result.get_interpolated_plan().position.cpu().numpy()
             traj = self.normalize_trajectory_equivalents(traj, label)
             if not self.trajectory_in_operational_limits(traj, label):
+                self.runtime_log.log(
+                    "curobo_plan_rejected", planner="joint_space", label=label,
+                    reason="operational_joint_limits", trajectory_rad=traj)
                 return None
             if not skip_swing_check and not self.trajectory_has_reasonable_swing(traj, start_joints, label):
+                self.runtime_log.log(
+                    "curobo_plan_rejected", planner="joint_space", label=label,
+                    reason="joint_swing", trajectory_rad=traj)
                 return None
             motion_time = float(result.motion_time.item())
             self.get_logger().info(
                 f"{label} JS Plan OK {dt:.0f}ms {traj.shape[0]}pts {motion_time:.2f}s | "
                 f"goal={[f'{v:.1f}' for v in np.rad2deg(target_joints_rad)]}°")
+            self.runtime_log.log(
+                "curobo_plan_success",
+                planner="joint_space",
+                label=label,
+                planning_latency_ms=dt,
+                motion_time_sec=motion_time,
+                start_joints_rad=start_joints,
+                target_joints_rad=target_joints_rad,
+                trajectory_rad=traj,
+            )
             return traj, motion_time
 
         status = getattr(result, "status", "?")
@@ -609,6 +715,15 @@ class CuroboPlanner(Node):
             f"goal={[f'{v:.1f}' for v in np.rad2deg(target_joints_rad)]}°")
         if "INVALID_START_STATE_WORLD_COLLISION" in str(status) or "GRAPH_FAIL" in str(status):
             self.diagnose_js_endpoint_collision(start_joints, target_joints_rad, label)
+        self.runtime_log.log(
+            "curobo_plan_fail",
+            planner="joint_space",
+            label=label,
+            status=str(status),
+            planning_latency_ms=dt,
+            start_joints_rad=start_joints,
+            target_joints_rad=target_joints_rad,
+        )
         return None
 
     def execute_spline(self, traj_rad, motion_time: float) -> bool:
@@ -638,6 +753,16 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"Spline {n}pts plan={motion_time:.2f}s exec={req.time:.2f}s "
             f"→ end={[f'{v:.1f}' for v in traj_deg[-1]]}°")
+        self.runtime_log.log(
+            "motion_command",
+            controller="doosan_move_spline_joint",
+            service="/dsr01/motion/move_spline_joint",
+            trajectory_deg=traj_deg,
+            planned_motion_time_sec=motion_time,
+            requested_time_sec=req.time,
+            velocity_deg_s=req.vel,
+            acceleration_deg_s2=req.acc,
+        )
         future = self.cli_spline.call_async(req)
         t0 = time.time()
         while not future.done() and (time.time() - t0) < 60.0:
@@ -646,6 +771,12 @@ class CuroboPlanner(Node):
         ok = future.done() and future.result() and future.result().success
         if not ok:
             self.get_logger().error("Spline failed/timeout")
+        self.runtime_log.log(
+            "motion_result",
+            controller="doosan_move_spline_joint",
+            success=bool(ok),
+            current_joints_rad=self.current_joints,
+        )
         return ok
 
     def execute_tool_z_line(self, distance_m: float, motion_label="FINAL_APPROACH_STRAIGHT") -> bool:
@@ -673,6 +804,16 @@ class CuroboPlanner(Node):
             f"{motion_label} TOOL {'+Z' if distance_m > 0 else '-Z'} "
             f"{abs(distance_m)*1000:.1f}mm "
             f"vel={FINAL_APPROACH_VEL_MM_S:.1f}mm/s")
+        self.runtime_log.log(
+            "motion_command",
+            controller="doosan_move_line",
+            label=motion_label,
+            service="/dsr01/motion/move_line",
+            reference_frame="tool",
+            relative_pose_mm_deg=req.pos,
+            velocity=req.vel,
+            acceleration=req.acc,
+        )
         future = self.cli_movel.call_async(req)
         t0 = time.time()
         while not future.done() and (time.time() - t0) < 30.0:
@@ -680,6 +821,13 @@ class CuroboPlanner(Node):
         ok = future.done() and future.result() and future.result().success
         if not ok:
             self.get_logger().error(f"{motion_label} MoveLine failed/timeout")
+        self.runtime_log.log(
+            "motion_result",
+            controller="doosan_move_line",
+            label=motion_label,
+            success=bool(ok),
+            current_joints_rad=self.current_joints,
+        )
         return ok
 
     def _nearest_equivalent_joints(self, base_joints_deg):
@@ -755,6 +903,18 @@ class CuroboPlanner(Node):
 
     def _pick(self, msg: PoseStamped):
         p = msg.pose.position
+        self.runtime_log.log(
+            "pick_sequence_start",
+            input_frame=msg.header.frame_id,
+            input_target_m=[p.x, p.y, p.z],
+            input_quat_xyzw=[
+                msg.pose.orientation.x,
+                msg.pose.orientation.y,
+                msg.pose.orientation.z,
+                msg.pose.orientation.w,
+            ],
+            start_joints_rad=self.current_joints,
+        )
 
         # Y 클램핑: berry는 벽 표면보다 뒤에 있을 수 없음 (FK drift 보정)
         raw_y = float(p.y)
@@ -782,6 +942,12 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"=== PICK 딸기 raw=({raw_straw[0]*1000:.0f},{raw_straw[1]*1000:.0f},{raw_straw[2]*1000:.0f})mm "
             f"grasp=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm ===")
+        self.runtime_log.log(
+            "pick_target_prepared",
+            raw_target_m=raw_straw,
+            grasp_target_m=straw,
+            wall_y_clamped=bool(float(p.y) > WALL_SURFACE_Y_M),
+        )
 
         # 0. 이웃 딸기 장애물 등록
         self._register_neighbor_obstacles(straw)
@@ -902,9 +1068,18 @@ class CuroboPlanner(Node):
             f"approach_dir={np.round(used_approach_dir, 4).tolist()} "
             f"elevation={np.degrees(np.arcsin(np.clip(used_approach_dir[2], -1.0, 1.0))):+.1f}deg "
             f"(attempt {grasp_attempt}/{n_offsets * n_quats})")
+        self.runtime_log.log(
+            "grasp_approach_complete",
+            grasp_offset_m=used_grasp_offset,
+            grasp_variant=used_grasp_variant,
+            approach_dir=used_approach_dir,
+            final_approach_distance_m=final_approach_distance,
+            current_joints_rad=self.current_joints,
+        )
 
         # 3. 그리퍼 닫기
         self.get_logger().info("3 close gripper")
+        self.runtime_log.log("gripper_command", command="close")
         self.call_trigger(self.cli_gripper_close)
         time.sleep(2.0)
 
@@ -939,6 +1114,11 @@ class CuroboPlanner(Node):
         self._clear_neighbor_obstacles()
         self._reset_gripper()  # 다음 파지를 위해 approach 위치(600)로 복귀
         self.pick_complete_pub.publish(Empty())
+        self.runtime_log.log(
+            "pick_sequence_complete",
+            result_code="SEQUENCE_COMPLETE_UNVERIFIED",
+            current_joints_rad=self.current_joints,
+        )
         self.get_logger().info("=== PICK COMPLETE ===")
 
 

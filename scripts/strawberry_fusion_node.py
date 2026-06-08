@@ -26,6 +26,7 @@ from std_msgs.msg import Float64MultiArray
 import pyrealsense2 as rs
 from ultralytics import YOLO
 from scipy.spatial.transform import Rotation as ScipyR
+from runtime_jsonl_logger import RuntimeJsonlLogger
 
 # ── Joint names (Doosan E0509) ────────────────────────────────────────────────
 JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
@@ -162,6 +163,7 @@ class StrawberryFusionNode(Node):
 
     def __init__(self):
         super().__init__("strawberry_fusion_node")
+        self.runtime_log = RuntimeJsonlLogger(self.get_name())
 
         # ── parameters ────────────────────────────────────────────────────────
         self.declare_parameter(
@@ -267,10 +269,27 @@ class StrawberryFusionNode(Node):
         self.timer = self.create_timer(1.0 / 30.0, self._loop)
         self.get_logger().info(
             "StrawberryFusionNode ready.  q=quit in display window")
+        self.get_logger().info(f"Runtime JSONL: {self.runtime_log.path}")
         self.get_logger().info(
             f"Target stabilization: median window={self._position_window_size}, "
             f"min_samples={self._position_min_samples}, "
             f"max_spread={self._position_max_spread_m*1000:.0f}mm")
+        self.runtime_log.log(
+            "node_start",
+            pipeline_role="seg_pose_fusion_and_target_generation",
+            models={"seg": seg_path, "pose": pose_path},
+            calibration_npz=calib_path,
+            parameters={
+                "yolo_conf": self._conf,
+                "kp_conf_min": self._kp_min,
+                "infer_every": self._infer_n,
+                "stable_hits_required": self._stable_hits,
+                "target_position_window_size": self._position_window_size,
+                "target_position_min_samples": self._position_min_samples,
+                "target_position_max_spread_m": self._position_max_spread_m,
+                "track_match_distance_m": self._track_match_dist,
+            },
+        )
 
     def _update_track(self, pos_base: np.ndarray, quat_xyzw: np.ndarray):
         """Simple 3-D nearest-neighbor tracker to suppress frame flicker."""
@@ -386,6 +405,15 @@ class StrawberryFusionNode(Node):
         pmsg.pose.orientation.z = float(track["quat"][2])
         pmsg.pose.orientation.w = float(track["quat"][3])
         self.pick_pub.publish(pmsg)
+        self.runtime_log.log(
+            "stable_pick_target_published",
+            topic="/strawberry/detection/pick_pose",
+            frame_id="base_link",
+            target_pos_m=track["pos"],
+            target_quat_xyzw=track["quat"],
+            samples=len(track["position_history"]),
+            spread_m=track["position_spread_m"],
+        )
         self.get_logger().info(
             "Published stable pick target "
             f"xyz=({track['pos'][0]:.3f},{track['pos'][1]:.3f},{track['pos'][2]:.3f})m "
@@ -581,6 +609,11 @@ class StrawberryFusionNode(Node):
                     smsg = Float64MultiArray()
                     smsg.data = scene_flat
                     self.scene_pub.publish(smsg)
+                    self.runtime_log.log(
+                        "scene_positions_published",
+                        topic="/strawberry/detection/scene_positions",
+                        positions_m=np.asarray(scene_flat).reshape(-1, 3),
+                    )
 
             # ── fusion: match each pose detection to a seg mask ───────────────
             kp_colors = [COLOR_KP0, COLOR_KP1, COLOR_KP2]

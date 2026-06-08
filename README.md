@@ -23,6 +23,8 @@ Intel RealSense RGB-D (eye-in-hand)
 ```
 
 상세 architecture diagram과 sequence diagram은 [docs/system_architecture.md](docs/system_architecture.md)를 참고하세요.
+단계별 planner 역할과 시뮬레이션 재생 JSONL 규격은
+[docs/runtime_pipeline_and_simulation_logs.md](docs/runtime_pipeline_and_simulation_logs.md)를 참고하세요.
 
 ## Hardware And Stack
 

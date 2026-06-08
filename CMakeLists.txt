@@ -68,6 +68,8 @@ install(PROGRAMS
   scripts/teach_place_slots.py
   scripts/object_tracking_node.py
   scripts/environment_visualizer.py
+  scripts/runtime_jsonl_logger.py
+  scripts/validate_runtime_jsonl.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

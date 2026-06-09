@@ -37,6 +37,9 @@ LEFTMOST_DEEP_IK_MAX_ATTEMPTS = 4
 LEFTMOST_DEEP_IK_TIMEOUT_SEC = 3.0
 LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: detection 흔들림을 고려해 +X 보정을 5mm로 제한
 LEFTMOST_TOP_DOWN_X_THRESHOLD_M = -0.300
+LEFTMOST_EXTRA_ADVANCE_REQUEST_M = 0.080  # 실기 요청값; wall safety gate가 실제 실행량을 제한
+LEFTMOST_WALL_SAFETY_MARGIN_M = 0.020     # 모델상 stem/wall 앞 최소 잔여 거리
+LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 10.0    # 미모델링 잎/줄기 구간 저속 진입
 GRASP_Z_BIAS         = 0.000    # fusion이 KP0→KP2 줄기 방향 보정을 적용하므로 중복 Z 보정 금지
 PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
 PRE_APPROACH_SETTLE_SEC = 1.0  # 자세/파지 위치 확정 후 완전 정지
@@ -248,6 +251,10 @@ class CuroboPlanner(Node):
         self.declare_parameter("tray_cells_json", "")
         self.declare_parameter("marker_place_max_age_sec", 3600.0)
         self.declare_parameter("marker_place_above_clearance_m", 0.100)
+        self.declare_parameter(
+            "leftmost_extra_advance_request_m", LEFTMOST_EXTRA_ADVANCE_REQUEST_M)
+        self.declare_parameter(
+            "leftmost_wall_safety_margin_m", LEFTMOST_WALL_SAFETY_MARGIN_M)
         self._enable_marker_place = bool(
             self.get_parameter("enable_marker_place_sequence").value)
         self._execute_marker_place_release = bool(
@@ -258,6 +265,10 @@ class CuroboPlanner(Node):
             self.get_parameter("marker_place_max_age_sec").value)
         self._marker_place_above_clearance_m = float(
             self.get_parameter("marker_place_above_clearance_m").value)
+        self._leftmost_extra_advance_request_m = max(
+            0.0, float(self.get_parameter("leftmost_extra_advance_request_m").value))
+        self._leftmost_wall_safety_margin_m = max(
+            0.0, float(self.get_parameter("leftmost_wall_safety_margin_m").value))
 
         # ── ROS2 인터페이스 ────────────────────────────────────────────────────
         self.create_subscription(
@@ -312,6 +323,8 @@ class CuroboPlanner(Node):
             leftmost_deep_ik_seeds=LEFTMOST_DEEP_IK_SEEDS,
             leftmost_deep_ik_max_attempts=LEFTMOST_DEEP_IK_MAX_ATTEMPTS,
             leftmost_deep_ik_timeout_sec=LEFTMOST_DEEP_IK_TIMEOUT_SEC,
+            leftmost_extra_advance_request_m=self._leftmost_extra_advance_request_m,
+            leftmost_wall_safety_margin_m=self._leftmost_wall_safety_margin_m,
             pre_approach_offset_m=PRE_APPROACH_OFFSET,
             top_down_quat_wxyz=TOP_DOWN_QUAT_WXYZ,
             top_down_x_threshold_m=LEFTMOST_TOP_DOWN_X_THRESHOLD_M,
@@ -348,7 +361,9 @@ class CuroboPlanner(Node):
             f"offsets_mm={[round(v*1000) for v in LEFTMOST_GRASP_RETRY_OFFSETS]} "
             f"deep_ik={LEFTMOST_DEEP_IK_SEEDS}seeds/"
             f"{LEFTMOST_DEEP_IK_MAX_ATTEMPTS}attempts/"
-            f"{LEFTMOST_DEEP_IK_TIMEOUT_SEC:.1f}s")
+            f"{LEFTMOST_DEEP_IK_TIMEOUT_SEC:.1f}s "
+            f"extra_request={self._leftmost_extra_advance_request_m*1000:.0f}mm "
+            f"wall_margin={self._leftmost_wall_safety_margin_m*1000:.0f}mm")
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
         self.get_logger().info(
@@ -1781,7 +1796,64 @@ class CuroboPlanner(Node):
             self.pick_complete_pub.publish(Empty())
             return
 
+        # 맨 왼쪽 target의 수평 fallback은 실기에서 파지 홈까지 진입이 부족했다.
+        # 요청량을 그대로 실행하면 모델상 stem/wall을 관통할 수 있으므로, 선택된
+        # stand-off에서 최소 wall safety margin을 뺀 거리까지만 저속 추가 진입한다.
+        extra_advance_m = 0.0
+        if (
+            raw_straw[0] < LEFTMOST_TOP_DOWN_X_THRESHOLD_M
+            and self._leftmost_extra_advance_request_m > 0.0
+        ):
+            available_extra_m = max(
+                0.0, used_grasp_offset - self._leftmost_wall_safety_margin_m)
+            extra_advance_m = min(
+                self._leftmost_extra_advance_request_m, available_extra_m)
+            if extra_advance_m < 0.020:
+                self.get_logger().warn(
+                    f"LEFTMOST_EXTRA_ADVANCE_BLOCKED: request="
+                    f"{self._leftmost_extra_advance_request_m*1000:.0f}mm, "
+                    f"safe_available={available_extra_m*1000:.0f}mm, "
+                    f"wall_margin={self._leftmost_wall_safety_margin_m*1000:.0f}mm")
+                self.runtime_log.log(
+                    "leftmost_extra_advance_blocked",
+                    requested_m=self._leftmost_extra_advance_request_m,
+                    safe_available_m=available_extra_m,
+                    wall_safety_margin_m=self._leftmost_wall_safety_margin_m,
+                    selected_grasp_offset_m=used_grasp_offset,
+                )
+                extra_advance_m = 0.0
+            else:
+                if extra_advance_m < self._leftmost_extra_advance_request_m:
+                    self.get_logger().warn(
+                        f"LEFTMOST_EXTRA_ADVANCE_CAPPED: request="
+                        f"{self._leftmost_extra_advance_request_m*1000:.0f}mm -> "
+                        f"execute={extra_advance_m*1000:.0f}mm "
+                        f"(wall margin {self._leftmost_wall_safety_margin_m*1000:.0f}mm)")
+                self.runtime_log.log(
+                    "leftmost_extra_advance",
+                    requested_m=self._leftmost_extra_advance_request_m,
+                    executed_m=extra_advance_m,
+                    wall_safety_margin_m=self._leftmost_wall_safety_margin_m,
+                    selected_grasp_offset_m=used_grasp_offset,
+                    validation="wall_distance_gate_only_not_curobo_endpoint",
+                )
+                if not self.execute_tool_z_line(
+                    extra_advance_m,
+                    motion_label="LEFTMOST_EXTRA_ADVANCE",
+                    vel_mm_s=LEFTMOST_EXTRA_ADVANCE_VEL_MM_S,
+                    acc_mm_s2=FINAL_APPROACH_ACC_MM_S2,
+                ):
+                    self.get_logger().error(
+                        "ABORT: leftmost extra advance failed after dispatch — "
+                        "holding current pose")
+                    self._clear_neighbor_obstacles()
+                    self._hold_pick_sequence("leftmost_extra_advance_failed")
+                    return
+                used_grasp_ee_pos = (
+                    used_grasp_ee_pos + extra_advance_m * used_approach_dir)
+
         time.sleep(FINAL_APPROACH_SETTLE_SEC)
+        total_approach_distance = final_approach_distance + extra_advance_m
         grasp_joints = (
             list(self.current_joints)
             if self.current_joints is not None
@@ -1799,6 +1871,8 @@ class CuroboPlanner(Node):
             grasp_variant=used_grasp_variant,
             approach_dir=used_approach_dir,
             final_approach_distance_m=final_approach_distance,
+            extra_advance_m=extra_advance_m,
+            total_approach_distance_m=total_approach_distance,
             current_joints_rad=self.current_joints,
         )
 
@@ -1838,9 +1912,9 @@ class CuroboPlanner(Node):
         if downward_status == "fallback":
             self.get_logger().info(
                 f"4 fallback straight reverse retreat — retracing "
-                f"{final_approach_distance*1000:.1f}mm")
+                f"{total_approach_distance*1000:.1f}mm")
             if not self.execute_tool_z_line(
-                    -final_approach_distance, motion_label="RETREAT_STRAIGHT_REVERSE",
+                    -total_approach_distance, motion_label="RETREAT_STRAIGHT_REVERSE",
                     vel_mm_s=RETREAT_VEL_MM_S, acc_mm_s2=RETREAT_ACC_MM_S2):
                 self.get_logger().error(
                     "ABORT: straight reverse retreat failed — holding current pose; "

@@ -257,3 +257,51 @@ deep endpoint timeout = 3.0s
 - IK 검증에 실패한 위치로 MoveLine을 강제 연장하지 않는다.
 
 현재 단계는 **코드 검증 대상, 강화된 깊이 탐색 실기 미검증**이다.
+
+## Guarded Extra Advance For Leftmost Horizontal Fallback
+
+### 11:33~11:34 강화 탐색 결과
+
+`d62c894` 기준 실기 로그 2건에서 맨 왼쪽 target의 `30/35/40/45mm`
+endpoint는 강화된 IK seed/attempt 설정에서도 모두 실패했고, `50mm` stand-off만
+성공했다. 따라서 단순히 깊은 후보를 더 앞에 배치하는 방식으로는 진입 깊이가
+늘어나지 않았다.
+
+사용자는 방향은 적절하지만 실제 파지 홈까지 약 `80~100mm` 진입이 부족하다고
+관찰했다. 그러나 현재 모델은 `GRIPPER_LEN=160mm`, target/wall
+`Y=672mm`, 선택 stand-off `50mm`를 사용한다. 이 모델에서 `80~100mm`를
+강제로 더 진입시키면 whiteboard를 약 `30~50mm` 관통하는 계산이 된다.
+
+이는 단순 motion tuning 문제보다는 다음 보정값의 불일치 가능성을 의미한다.
+
+- cuRobo `ee_link`에서 실제 파지 홈까지의 유효 길이
+- `GRIPPER_LEN=160mm` 가정
+- eye-in-hand/FK 기반 target Y와 `WALL_SURFACE_Y_M`
+
+### 안전 제한 추가
+
+맨 왼쪽 target의 top-down 실패 후 수평 fallback에만 저속 추가 진입을 적용한다.
+
+```text
+requested extra advance = 80mm
+selected stand-off       = 50mm
+wall safety margin       = 20mm
+maximum executed advance = 30mm
+extra advance velocity   = 10mm/s
+```
+
+- 요청값과 실제 실행값은 `LEFTMOST_EXTRA_ADVANCE_CAPPED` 및 runtime JSONL에
+  각각 기록한다.
+- 추가 진입 후 하강 retreat 기준점을 같은 거리만큼 갱신한다.
+- 하강 retreat가 거부되어 직선 역진 fallback을 사용하면 기존 진입 거리와 추가
+  진입 거리를 합산하여 정확히 되돌아간다.
+- 이 추가 구간은 cuRobo endpoint 검증이 아니라 wall-distance gate만 통과한
+  실험 구간이다. 첫 실기 검증은 clear-space, single-target, E-stop 준비 상태에서
+  수행해야 한다.
+
+### 다음 필수 검증
+
+`80~100mm` 전체 보정을 적용하기 전, 실제 장비에서 `ee_link` 기준점부터 실제
+줄기가 들어가는 파지 홈까지의 TOOL +Z 길이를 측정하여 `GRIPPER_LEN`과 비교해야
+한다. 길이 오차가 확인되면 추가 MoveLine 보정보다 robot/tool geometry를 먼저
+수정한다.

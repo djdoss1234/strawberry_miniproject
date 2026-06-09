@@ -32,21 +32,15 @@ from runtime_jsonl_logger import RuntimeJsonlLogger
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
 GRASP_RETRY_OFFSETS  = [0.015, 0.030, 0.040, 0.050, 0.070]
 LEFTMOST_GRASP_RETRY_OFFSETS = [0.030, 0.035, 0.040, 0.045, 0.050, 0.070]
-LEFTMOST_DEEP_IK_SEEDS = 128
-LEFTMOST_DEEP_IK_MAX_ATTEMPTS = 4
-LEFTMOST_DEEP_IK_TIMEOUT_SEC = 3.0
 LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: +X 보정 (ELBOW_UP 드리프트 보정)
 LEFTMOST_EXTRA_ADVANCE_REQUEST_M = 0.065  # 실기 요청값; wall safety gate가 실제 실행량을 제한
 LEFTMOST_WALL_SAFETY_MARGIN_M = -0.030   # 실기 확인: 줄기가 모델 벽 30mm 안쪽 → 음수로 80mm extra 허용
 # 근거: 2026-06-09 x=-345mm target, 210mm 진입 성공, 역진 정상
 # available_extra = grasp_offset(50mm) - margin(-30mm) = 80mm → override 불필요
-LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 30.0    # 미모델링 잎/줄기 구간 저속 진입
+LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 50.0    # 직접 접근이므로 고속 진입
 GRASP_Z_BIAS         = 0.030    # detection이 berry body 하단을 잡으므로 +30mm 위로 보정 (peduncle 위치)
-PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
-PRE_APPROACH_SETTLE_SEC = 0.5  # 자세/파지 위치 확정 후 완전 정지
-FINAL_APPROACH_VEL_MM_S = 50.0 # pre-approach → grasp TOOL +Z 저속 직선 진입
+FINAL_APPROACH_VEL_MM_S = 50.0
 FINAL_APPROACH_ACC_MM_S2 = 60.0
-FINAL_APPROACH_SETTLE_SEC = 0.3
 RETREAT_VEL_MM_S         = 80.0  # 직선 retreat — approach보다 고속으로 줄기 분리
 RETREAT_ACC_MM_S2         = 100.0
 STRAIGHT_RETREAT_SETTLE_SEC = 0.5
@@ -67,8 +61,8 @@ GRASP_QUAT_RETRY_VARIANTS: list = [
     ("base",  [1, 0, 0],  +5.0),  # 5° 위 (4차)
 ]
 
-CARTESIAN_PLAN_MAX_ATTEMPTS = 2
-CARTESIAN_PLAN_TIMEOUT_SEC  = 1.2
+CARTESIAN_PLAN_MAX_ATTEMPTS = 1
+CARTESIAN_PLAN_TIMEOUT_SEC  = 0.8
 DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 
 GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (스캔 이동 중 미리 설정됨)
@@ -315,13 +309,9 @@ class CuroboPlanner(Node):
             grasp_retry_offsets_m=GRASP_RETRY_OFFSETS,
             leftmost_grasp_retry_offsets_m=LEFTMOST_GRASP_RETRY_OFFSETS,
             leftmost_grasp_x_correction_m=LEFTMOST_GRASP_X_CORR_M,
-            leftmost_deep_ik_seeds=LEFTMOST_DEEP_IK_SEEDS,
-            leftmost_deep_ik_max_attempts=LEFTMOST_DEEP_IK_MAX_ATTEMPTS,
-            leftmost_deep_ik_timeout_sec=LEFTMOST_DEEP_IK_TIMEOUT_SEC,
             leftmost_extra_advance_request_m=self._leftmost_extra_advance_request_m,
             leftmost_wall_safety_margin_m=self._leftmost_wall_safety_margin_m,
             leftmost_allow_wall_model_override=self._leftmost_allow_wall_model_override,
-            pre_approach_offset_m=PRE_APPROACH_OFFSET,
             enable_marker_place=self._enable_marker_place,
             execute_marker_place_release=self._execute_marker_place_release,
             marker_place_max_age_sec=self._marker_place_max_age_sec,
@@ -342,9 +332,6 @@ class CuroboPlanner(Node):
             f"  LEFTMOST horizontal fallback x_corr="
             f"{LEFTMOST_GRASP_X_CORR_M*1000:+.0f}mm "
             f"offsets_mm={[round(v*1000) for v in LEFTMOST_GRASP_RETRY_OFFSETS]} "
-            f"deep_ik={LEFTMOST_DEEP_IK_SEEDS}seeds/"
-            f"{LEFTMOST_DEEP_IK_MAX_ATTEMPTS}attempts/"
-            f"{LEFTMOST_DEEP_IK_TIMEOUT_SEC:.1f}s "
             f"extra_request={self._leftmost_extra_advance_request_m*1000:.0f}mm "
             f"wall_margin={self._leftmost_wall_safety_margin_m*1000:.0f}mm "
             f"wall_override={self._leftmost_allow_wall_model_override}")
@@ -864,7 +851,7 @@ class CuroboPlanner(Node):
     def execute_tool_z_line(self, distance_m: float, motion_label="FINAL_APPROACH_STRAIGHT",
                             vel_mm_s: float = None, acc_mm_s2: float = None) -> bool:
         """현재 TCP 자세를 유지하고 TOOL Z축 방향으로 직선 이동."""
-        if not 0.02 <= abs(distance_m) <= PRE_APPROACH_OFFSET:
+        if not 0.02 <= abs(distance_m) <= 0.25:
             self.get_logger().error(
                 f"MoveLine rejected: {motion_label} distance={distance_m*1000:.1f}mm")
             return False
@@ -1276,19 +1263,15 @@ class CuroboPlanner(Node):
         n_offsets = len(grasp_retry_offsets)
         n_quats   = len(GRASP_QUAT_RETRY_VARIANTS)
         self.get_logger().info(
-            f"2 grasp (CuRobo 2-step) — trying {n_offsets} offsets × {n_quats} quats "
+            f"2 grasp (CuRobo 1-step) — trying {n_offsets} offsets × {n_quats} quats "
             f"| target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
             f"| start_J1={np.rad2deg(self.current_joints[0]):.1f}°")
-        ret_pre   = None   # pre-approach plan
-        ret_grasp = None   # final grasp plan
+        ret_grasp = None   # grasp plan
         used_grasp_offset = None
         used_grasp_variant = None
         used_approach_dir = None
         used_grasp_ee_pos = None
         grasp_attempt = 0
-        # Pre-approach depends only on orientation, not grasp offset. The old
-        # offset-first loop replanned the exact same pre-approach up to four
-        # times per orientation, adding seconds of avoidable latency.
         for quat_frame, axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
             q_delta = quat_from_axis_angle(axis, np.deg2rad(quat_deg))
             if quat_frame == "base":
@@ -1296,63 +1279,29 @@ class CuroboPlanner(Node):
             else:
                 q_retry = quat_multiply_wxyz(WALL_QUAT_WXYZ, q_delta)
             approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
-            ee_pre = straw - (PRE_APPROACH_OFFSET + GRIPPER_LEN) * approach_dir
-            r_pre_for_variant = self.plan(
-                self.current_joints, ee_pre.tolist(), q_retry, num_ik_seeds=96
-            )
-            if r_pre_for_variant is None:
-                grasp_attempt += len(grasp_retry_offsets)
-                continue
-            pre_joints = r_pre_for_variant[0][-1].tolist()
-            pre_j2_deg = float(np.rad2deg(pre_joints[1]))
-            pre_j5_deg = float(np.rad2deg(pre_joints[4]))
-            elbow_tag = "ELBOW_UP" if pre_j2_deg > 5.0 else "elbow_dn"
-            self.get_logger().info(
-                f"  pre-approach IK variant=({quat_frame},{axis},{quat_deg:.0f}°) "
-                f"J2={pre_j2_deg:+.1f}° J5={pre_j5_deg:+.1f}° [{elbow_tag}]")
 
             for grasp_offset in grasp_retry_offsets:
                 grasp_attempt += 1
-                # final grasp: pre-approach에서 grasp_offset까지 직선 접근
                 ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
-                is_leftmost_deep_candidate = (
-                    raw_straw[0] < -0.30
-                    and grasp_offset <= 0.045
-                )
                 r_grasp = self.plan(
-                    pre_joints,
+                    self.current_joints,
                     ee_g_try.tolist(),
                     q_retry,
-                    num_ik_seeds=(
-                        LEFTMOST_DEEP_IK_SEEDS
-                        if is_leftmost_deep_candidate
-                        else 32
-                    ),
-                    max_attempts=(
-                        LEFTMOST_DEEP_IK_MAX_ATTEMPTS
-                        if is_leftmost_deep_candidate
-                        else None
-                    ),
-                    timeout_sec=(
-                        LEFTMOST_DEEP_IK_TIMEOUT_SEC
-                        if is_leftmost_deep_candidate
-                        else None
-                    ),
+                    num_ik_seeds=48,
                 )
                 if r_grasp is None:
                     continue
-                ret_pre   = r_pre_for_variant
                 ret_grasp = r_grasp
                 used_grasp_offset = grasp_offset
                 used_grasp_variant = (quat_frame, axis, quat_deg)
                 used_approach_dir = approach_dir
                 used_grasp_ee_pos = ee_g_try.copy()
                 break
-            if ret_pre is not None:
+            if ret_grasp is not None:
                 break
 
         if (
-            ret_pre is not None
+            ret_grasp is not None
             and raw_straw[0] < -0.30
             and used_grasp_offset >= 0.050
         ):
@@ -1369,7 +1318,7 @@ class CuroboPlanner(Node):
                 reason="deeper_endpoints_rejected",
             )
 
-        if ret_pre is None:
+        if ret_grasp is None:
             self.get_logger().error(
                 f"ABORT: grasp 전체 실패 — {grasp_attempt}개 후보 모두 reject "
                 f"(target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
@@ -1382,26 +1331,10 @@ class CuroboPlanner(Node):
             self.pick_complete_pub.publish(Empty())
             return
 
-        # pre-approach 실행
-        if not self.execute_spline(*ret_pre):
+        # grasp 위치로 직접 이동
+        if not self.execute_spline(*ret_grasp):
             self.get_logger().error(
-                f"ABORT: pre-approach spline 실행 실패 "
-                f"(offset={used_grasp_offset:+.3f}m variant={used_grasp_variant})")
-            self._clear_neighbor_obstacles()
-            self._reset_gripper()
-            self.pick_complete_pub.publish(Empty())
-            return
-
-        # pre-approach에서 완전히 멈춘 뒤, 확정된 자세 그대로 TOOL +Z 직선 진입.
-        # r_grasp는 endpoint IK/충돌/branch 검증용이며 실행 자체는 MoveLine이 담당한다.
-        final_approach_distance = PRE_APPROACH_OFFSET - used_grasp_offset
-        self.get_logger().info(
-            f"PRE_APPROACH_REACHED — target locked, settling {PRE_APPROACH_SETTLE_SEC:.1f}s "
-            f"before {final_approach_distance*1000:.1f}mm straight grasp advance")
-        time.sleep(PRE_APPROACH_SETTLE_SEC)
-        if not self.execute_tool_z_line(final_approach_distance):
-            self.get_logger().error(
-                f"ABORT: final straight grasp advance failed "
+                f"ABORT: grasp spline 실행 실패 "
                 f"(offset={used_grasp_offset:+.3f}m variant={used_grasp_variant})")
             self._clear_neighbor_obstacles()
             self._reset_gripper()
@@ -1482,8 +1415,6 @@ class CuroboPlanner(Node):
                 used_grasp_ee_pos = (
                     used_grasp_ee_pos + extra_advance_m * used_approach_dir)
 
-        time.sleep(FINAL_APPROACH_SETTLE_SEC)
-        total_approach_distance = final_approach_distance + extra_advance_m
         grasp_joints = (
             list(self.current_joints)
             if self.current_joints is not None
@@ -1494,15 +1425,14 @@ class CuroboPlanner(Node):
             f"variant={used_grasp_variant} "
             f"approach_dir={np.round(used_approach_dir, 4).tolist()} "
             f"elevation={np.degrees(np.arcsin(np.clip(used_approach_dir[2], -1.0, 1.0))):+.1f}deg "
+            f"extra_advance_m={extra_advance_m*1000:.1f}mm "
             f"(attempt {grasp_attempt}/{n_offsets * n_quats})")
         self.runtime_log.log(
             "grasp_pose_reached",
             grasp_offset_m=used_grasp_offset,
             grasp_variant=used_grasp_variant,
             approach_dir=used_approach_dir,
-            final_approach_distance_m=final_approach_distance,
             extra_advance_m=extra_advance_m,
-            total_approach_distance_m=total_approach_distance,
             current_joints_rad=self.current_joints,
         )
 
@@ -1531,19 +1461,12 @@ class CuroboPlanner(Node):
             f"at {DETACH_PULL_VEL_MM_S:.0f}mm/s")
         self._execute_pitch_detach()  # 실패해도 retreat은 항상 실행
 
-        # 직선 역진 retreat (extra advance 포함)
+        # 직선 역진 retreat (extra advance만 역진)
         reverse_ok = True
         if extra_advance_m > 0.0:
             reverse_ok = self.execute_tool_z_line(
                 -extra_advance_m,
-                motion_label="RETREAT_EXTRA_ADVANCE_REVERSE",
-                vel_mm_s=RETREAT_VEL_MM_S,
-                acc_mm_s2=RETREAT_ACC_MM_S2,
-            )
-        if reverse_ok:
-            reverse_ok = self.execute_tool_z_line(
-                -final_approach_distance,
-                motion_label="RETREAT_STRAIGHT_REVERSE",
+                motion_label="RETREAT",
                 vel_mm_s=RETREAT_VEL_MM_S,
                 acc_mm_s2=RETREAT_ACC_MM_S2,
             )

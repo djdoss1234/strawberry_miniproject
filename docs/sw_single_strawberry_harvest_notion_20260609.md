@@ -105,14 +105,16 @@ RealSense RGB-D
  -> ripe 필터 + 줄기 keypoint 안정화
  -> depth + eye-in-hand calibration + E0509 FK
  -> base_link 기준 줄기 target 생성
+ -> 그리퍼를 approach position 600으로 유지
  -> scan_executor가 현재 셀 target 하나 전달
  -> cuRobo가 pre-approach와 grasp endpoint 검증
  -> MoveSplineJoint로 pre-approach 이동
  -> 정지 후 MoveLine TOOL +Z 직선 진입
- -> RH-P12-RN-A gripper close
+ -> RH-P12-RN-A gripper position 700으로 close
  -> MoveLine BASE -Z 40mm detach pull
  -> MoveLine TOOL -Z 직선 retreat
  -> cuRobo + MoveSplineJoint로 SW scan pose 복귀
+ -> 다음 수확을 위해 gripper position 600으로 복귀
  -> runtime JSONL에 결과 기록
 ```
 
@@ -126,6 +128,7 @@ RealSense RGB-D
 | MoveSplineJoint | cuRobo joint trajectory 실행 | 여러 joint waypoint를 부드럽게 실제 로봇에서 실행하기 위해 |
 | MoveLine TOOL `+Z` | 최종 줄기 접근 | 줄기 근처에서 TCP 직선 진입을 보장하기 위해 |
 | MoveLine BASE `-Z` | 과실 분리 | 정면 후퇴 대신 아래 방향으로 당겨 줄기를 분리하기 위해 |
+| Gripper position `600 -> 700 -> 600` | 접근 준비, 파지, 다음 사이클 준비 | 접근 중 파츠 사이에 줄기가 들어올 여유를 유지하고 다음 수확 시 걸림을 방지하기 위해 |
 | JSONL runtime log | 전체 실행 과정 | 성공/실패 원인을 재현하고 추후 시뮬레이션에 사용하기 위해 |
 
 ---
@@ -179,7 +182,68 @@ cuRobo 경로 생성 성공
 
 ## 5. 개발 및 트러블슈팅 과정
 
-### STEP 1 — 접근 orientation 수정
+### STEP 1 — 그리퍼 Approach Position 600 상태 적용
+
+**최초 구현일: 2026-06-05**
+
+초기에는 pick이 끝난 뒤 그리퍼가 close position `700` 상태로 남아 다음 scan 및
+접근을 시작했다.
+
+이 상태에서는 다음 줄기가 파츠 사이로 들어올 공간이 부족하고, 닫힌 파츠가
+잎이나 줄기에 걸릴 수 있었다. 또한 pick 시작마다 다시 open 명령을 보내면
+불필요한 대기와 동작이 추가됐다.
+
+따라서 그리퍼 상태를 다음처럼 변경했다.
+
+```text
+노드 시작 2초 후
+ -> position 600 자동 설정
+
+scan / pre-approach / final approach
+ -> position 600 유지
+
+grasp pose 도착
+ -> position 700 close
+
+pick 완료 또는 실패
+ -> position 600 복귀
+```
+
+| 상태 | Position | 의미 |
+| --- | --- | --- |
+| 접근 준비 | `600` | 줄기가 파츠 사이로 들어올 수 있는 개도 유지 |
+| 파지 | `700` | 줄기 파지 close 명령 |
+| 완료/실패 후 | `600` | 다음 scan 및 pick 준비 |
+
+현재 position `600`은 줄기만 파츠 사이에 들어오면 적절한 접근 개도다. 다만
+실제 contact/force 값이 아니라 명령 position이므로, 파지 성공 판정과는 별도로
+관리한다.
+
+관련 커밋:
+
+```text
+37fef71  2026-06-05  OPEN_GRIPPER_ON_PICK_START=False
+bdd04f4  2026-06-05  노드 시작/pick 완료·실패 후 gripper 600 복귀
+```
+
+### 사진/영상 4 — 그리퍼 600 접근 상태
+
+**삽입 위치:** 이 절 마지막
+
+**필요 자료:** 새로 촬영 필요
+
+**권장 구성:** 같은 카메라 각도에서 두 장 비교
+
+- position `600`: 줄기가 파츠 사이로 들어올 수 있는 접근 상태
+- position `700`: 파지 close 상태
+
+**권장 캡션:**
+
+`접근 중에는 position 600으로 줄기 진입 공간을 유지하고, grasp pose에서만 position 700으로 닫는다.`
+
+---
+
+### STEP 2 — 접근 orientation 수정
 
 기존 orientation의 접근 방향에는 약 `+14.7deg` 상승 성분이 포함되어 있었다.
 
@@ -190,7 +254,7 @@ cuRobo 경로 생성 성공
 
 ---
 
-### STEP 2 — Stop-Then-Straight 접근 적용
+### STEP 3 — Stop-Then-Straight 접근 적용
 
 1-step cuRobo 접근은 planning 단계를 줄일 수 있었지만, 긴 joint spline이 줄기
 근처까지 이어지면서 최종 접근 정확도가 떨어졌다.
@@ -207,7 +271,7 @@ cuRobo 경로 생성 성공
 
 ---
 
-### STEP 3 — 줄기 target 높이 및 진입 깊이 보정
+### STEP 4 — 줄기 target 높이 및 진입 깊이 보정
 
 그리퍼 파츠가 줄기보다 아래를 지나면서 잎과 과실을 밀어내는 문제가 있었다.
 
@@ -221,7 +285,7 @@ cuRobo 경로 생성 성공
 
 ---
 
-### STEP 4 — 파지 후 분리 동작 변경
+### STEP 5 — 파지 후 분리 동작 변경
 
 초기에는 파지 후 진입 경로를 정면으로 역주행했다.
 
@@ -245,7 +309,7 @@ gripper close
 
 ---
 
-### STEP 5 — 관절 branch 및 spline jump 차단
+### STEP 6 — 관절 branch 및 spline jump 차단
 
 J4 등가각과 IK branch가 달라지면 로봇이 목표 근처에서 크게 회전하는 문제가
 발생했다.
@@ -261,7 +325,7 @@ cuRobo 경로 생성 후 다음 항목을 추가 검사했다.
 
 ---
 
-### STEP 6 — SW 단일딸기 파지 및 분리 관찰
+### STEP 7 — SW 단일딸기 파지 및 분리 관찰
 
 반복 실기 검증을 통해 SW 단일딸기에서 줄기 파지와 과실 분리 성공 사례를
 육안으로 확인했다.
@@ -269,7 +333,7 @@ cuRobo 경로 생성 후 다음 항목을 추가 검사했다.
 단, 현재 그리퍼 상태 읽기가 실패하는 경우가 있어 자동 결과는
 `GRASP_UNVERIFIED`로 기록한다.
 
-### 사진/영상 4 — SW 수확 성공 증거
+### 사진/영상 5 — SW 수확 성공 증거
 
 **삽입 위치:** 이 절 바로 아래
 
@@ -312,6 +376,7 @@ curobo_planner_node_20260609T160052-da5edd5a.jsonl
 | spline jump reject | `3건` | 위험 branch 실행 전 차단 |
 | MoveSplineJoint 실행 | `2건 모두 success` | pre-approach, scan pose 복귀 |
 | MoveLine 실행 | `3건 모두 success` | final approach, extra advance, retreat |
+| gripper 접근 준비 상태 | position `600` | 노드 시작 및 pick 완료/실패 후 복귀 |
 | extra advance | `65mm` | TOOL `+Z` |
 | detach pull | `40mm` | BASE `-Z` |
 | 최종 자동 결과 | `GRASP_UNVERIFIED` | present position read 실패 |
@@ -320,7 +385,7 @@ curobo_planner_node_20260609T160052-da5edd5a.jsonl
 >
 > 동일 goal 반복 100회 planner benchmark 결과는 아니다.
 
-### 사진 5 — 로그 및 정량 결과
+### 사진 6 — 로그 및 정량 결과
 
 **삽입 위치:** 위 표 아래
 

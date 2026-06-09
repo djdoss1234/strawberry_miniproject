@@ -142,3 +142,23 @@ localization을 사용한 단일 release 승인 실험을 수행해야 한다.
   파지 가능한 상태가 되었다.
 - **해결되지 않은 문제:** top-down 파지 자체는 아직 실행 성공 사례가 없다.
 - 센서 기반 성공 근거가 없으므로 정량 수확 성공률에는 포함하지 않는다.
+
+## 2026-06-09 SW Single-Fruit Harvest Checkpoint
+
+민석의 실기 육안 관찰 기준으로 SW 단일 과실의 줄기 파지 및 분리 성공 사례를
+확보했다. 현재 motion은 cuRobo pre-approach 검증, MoveLine 직선 진입, gripper
+close, BASE `-Z 40mm` detach pull, scan pose 복귀 순서다.
+
+최신 완료 run `20260609T160052-da5edd5a`에서 확인된 값:
+
+| 항목 | 값 |
+| --- | --- |
+| target 수신 -> scan pose 복귀 | 약 `36.4초` |
+| grasp Z bias | `+30mm` |
+| extra advance | `65mm` |
+| detach pull | BASE `-Z 40mm` |
+| 자동 결과 코드 | `GRASP_UNVERIFIED` |
+| 수확 성공률 / 3D 오차 / 손상률 | 측정 필요 |
+
+따라서 “SW 단일 과실 육안 성공 사례 확보”까지는 주장할 수 있지만, 자동 검증된
+성공률 또는 일반화된 수확 성공은 아직 주장하지 않는다.

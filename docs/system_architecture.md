@@ -120,16 +120,17 @@ sequenceDiagram
 
 ## Current Harvest Motion Notes
 
-2026-06-07 기준 최종 파지 접근은 hybrid 방식이다.
+2026-06-09 기준 최종 파지 접근은 hybrid 방식이다.
 
 - cuRobo는 pre-approach 경로와 grasp endpoint의 IK/collision/branch 안전성을 검증한다.
 - 실제 마지막 진입은 pre-approach에서 완전히 멈춘 뒤 Doosan `MoveLine`으로
   TOOL `+Z` 방향 저속 직선 이동한다.
-- 파지 후에는 새로운 Cartesian retreat IK를 풀지 않고, 실제 진입 거리만큼
-  TOOL `-Z` 방향으로 동일 경로를 역주행한다. 역주행 실패 시 overview 이동을
+- 파지 후에는 BASE `-Z 40mm`로 아래 방향 detach pull을 수행한 뒤, 추가 진입
+  거리를 TOOL `-Z` 방향으로 역주행한다. 역주행 실패 시 overview 이동을
   차단하여 벽 근처에서 예기치 않은 큰 관절 회전이 발생하지 않도록 한다.
-- 현재 SW 실기에서 수평 정면 진입 방향은 확인했지만, 최종 진입 깊이가 부족해
-  실제 줄기 파지는 아직 성공하지 못했다.
+- 현재 SW 단일 과실에서 사용자가 줄기 파지 및 분리 성공 사례를 육안 확인했다.
+  다만 그리퍼 hardware read 실패로 자동 결과는 `GRASP_UNVERIFIED`이며, 반복
+  성공률은 아직 측정하지 않았다.
 - `grasp OK`와 `pick_complete`는 실제 파지 성공을 의미하지 않는다.
 
-상세 기록: [harvest_motion_session_20260607.md](harvest_motion_session_20260607.md)
+상세 기록: [sw_single_strawberry_harvest_retrospective_20260609.md](sw_single_strawberry_harvest_retrospective_20260609.md)

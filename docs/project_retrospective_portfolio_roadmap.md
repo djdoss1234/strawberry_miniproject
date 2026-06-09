@@ -4,6 +4,18 @@
 대상 패키지: `e0509_gripper_description`
 목적: 포트폴리오, 자기소개서 재료, 면접 대비, 실제 딸기 모형/농장형 후속 프로젝트 설계
 
+## 2026-06-09 SW 단일 과실 수확 체크포인트
+
+민석의 실기 관찰 기준으로 SW 단일 과실의 줄기 파지 및 분리 성공 사례를
+확보했다. 핵심은 cuRobo를 전 구간에 강제하지 않고, pre-approach와 endpoint
+검증에는 cuRobo를 사용하고 최종 접촉 구간은 Doosan MoveLine 직선 진입,
+분리 구간은 BASE `-Z 40mm` pull로 역할을 나눈 것이다.
+
+최신 완료 시퀀스는 약 `36.4초`였으나 자동 파지 판정은
+`GRASP_UNVERIFIED`다. 따라서 반복 성공률, target 오차, 손상률을 측정한 뒤
+포트폴리오 정량 성과로 갱신해야 한다. 상세 회고와 노션 복붙용 문서는
+`docs/sw_single_strawberry_harvest_retrospective_20260609.md`에 보관한다.
+
 ## 2026-06-07 수확 모션 업데이트
 
 SW 단일 딸기 실험에서 기존 고정 orientation의 접근축이 약 `+14.7 deg` 위로

@@ -26,7 +26,8 @@ RealSense RGB + aligned depth
  -> Doosan MoveSplineJoint: scan pose -> pre-approach
  -> Doosan MoveLine TOOL +Z: 정지 후 최종 직선 진입
  -> RH-P12-RN-A close
- -> Doosan MoveLine TOOL -Z: 진입 경로 직선 역주행
+ -> Doosan MoveLine BASE -Z: 40mm detach pull
+ -> Doosan MoveLine TOOL -Z: 추가 진입 거리 직선 역주행
  -> [미구현] VERIFY_GRASP / VERIFY_DETACH
  -> optional guarded marker place
     -> overview -> tray-view -> marker slot above
@@ -56,7 +57,8 @@ RealSense RGB + aligned depth
 | pre-approach 실행 | Doosan `MoveSplineJoint` | cuRobo trajectory를 실제 로봇에 실행 |
 | 최종 진입 | Doosan `MoveLine` | TOOL `+Z` 직선 접근 |
 | 파지 | RH-P12-RN-A gripper service | close 명령, 실제 파지 성공은 별도 검증 필요 |
-| 초기 후퇴 | Doosan `MoveLine` | TOOL `-Z`로 진입 경로 역주행 |
+| 분리 동작 | Doosan `MoveLine` | BASE `-Z 40mm`로 아래 방향 detach pull |
+| 초기 후퇴 | Doosan `MoveLine` | 추가 진입 거리를 TOOL `-Z`로 역주행 |
 | 파지/분리 검증 | 현재 미구현 | 사람 관찰 외 자동 성공 근거 없음 |
 | marker place | fresh tray JSON + cuRobo + MoveLine | 기본 비활성, preview/release 명시 승인형 |
 | scan pose 복귀 | cuRobo joint-space + `MoveSplineJoint` | 같은 셀의 다음 target을 위해 pick 시작 자세로 복귀 |
@@ -85,7 +87,8 @@ orientation의 grasp offset endpoint를 순차 검증한다. offset마다 동일
 
 ```text
 pre-approach -> grasp: TOOL +Z MoveLine
-grasp -> pre-approach: TOOL -Z MoveLine
+grasp -> detach: BASE -Z 40mm MoveLine
+detach -> retreat: TOOL -Z MoveLine
 ```
 
 이유:
@@ -113,6 +116,16 @@ grasp -> pre-approach: TOOL -Z MoveLine
 - 목표 위치가 안정적이어도 pose 모델이 KP0를 일관되게 잘못 찍으면 옆 접근할 수 있다.
   현재 quality guard는 명백한 저신뢰/비정상 geometry를 거부하지만, 일관된 오검출을
   완전히 판별하지는 못한다.
+
+## 2026-06-09 SW 단일 과실 체크포인트
+
+- SW 단일 과실의 줄기 파지 및 분리 성공 사례를 사용자가 육안 확인했다.
+- 최신 완료 run `20260609T160052-da5edd5a`는 target 수신부터 scan pose 복귀까지
+  약 `36.4초`가 소요됐다.
+- 현재 설정은 grasp Z `+30mm`, extra advance `65mm`, BASE `-Z 40mm` detach
+  pull을 사용한다.
+- 자동 판정은 gripper hardware read 실패로 `GRASP_UNVERIFIED`이므로, 이 결과를
+  정량 성공률로 집계하지 않는다.
 
 ## 6. 시뮬레이션 재생용 JSONL 로그
 

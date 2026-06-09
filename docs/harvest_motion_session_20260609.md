@@ -469,6 +469,23 @@ extra advance, Z bias, BASE -Z detach pull 등 이후 최적화는 유지한다.
 직전 측방 편차가 pre-approach 거리보다 해당 줄기 형상 또는 비전 검출점의 영향일
 가능성을 분리하기 위해 `PRE_APPROACH_OFFSET=60mm`로 다시 설정했다.
 
+### SW 단일 과실 수확 체크포인트
+
+민석의 육안 관찰 기준으로 SW 단일 과실의 줄기 파지 및 분리 성공 사례를
+확보했다. 최신 완료 run `20260609T160052-da5edd5a`는 다음을 기록했다.
+
+```text
+target 수신 -> scan pose 복귀: 약 36.4초
+grasp Z bias: +30mm
+extra advance: 65mm
+detach pull: BASE -Z 40mm
+result_code: GRASP_UNVERIFIED
+```
+
+따라서 현재 상태는 “SW 단일 과실 수확 모션의 육안 성공 사례 확보”이며,
+센서 기반 성공률과 일반화 성능은 아직 측정하지 않았다. 다음 실험은 동일 조건
+반복 측정, cycle time 단축, fresh tray marker place, NE/NW 복잡 셀 순서로 진행한다.
+
 - 10mm 최종 직선 접근을 허용하는 최소거리 수정은 유지한다.
 - spline 도착 후 `0.5s` 정지도 유지한다.
 - 다른 접근 깊이, Z bias, detach/retreat 설정은 변경하지 않았다.

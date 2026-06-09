@@ -270,8 +270,8 @@ class CuroboPlanner(Node):
             self.get_parameter("marker_place_above_clearance_m").value)
         self._leftmost_extra_advance_request_m = max(
             0.0, float(self.get_parameter("leftmost_extra_advance_request_m").value))
-        self._leftmost_wall_safety_margin_m = max(
-            0.0, float(self.get_parameter("leftmost_wall_safety_margin_m").value))
+        self._leftmost_wall_safety_margin_m = float(
+            self.get_parameter("leftmost_wall_safety_margin_m").value)
         self._leftmost_allow_wall_model_override = bool(
             self.get_parameter("leftmost_allow_wall_model_override").value)
 

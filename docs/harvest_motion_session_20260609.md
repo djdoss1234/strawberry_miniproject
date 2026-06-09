@@ -70,3 +70,61 @@ leftmost target
 5. clear-space 150mm 하강/상승 후에만 단일 딸기 파지를 허용
 
 현재 단계는 **코드 및 이론 축 검증 완료, 실기 미검증**이다.
+
+## Guarded Downward Detach Retreat
+
+### 실기 관찰과 적용 범위
+
+사용자는 leftmost 대상에서 파지가 잘 된 것을 관찰했다. 그러나 해당 실행의
+runtime JSONL을 확인하면 실제 파지 경로는 top-down이 아니라 기존 수평 접근의
+`-5deg` pitch fallback이었다.
+
+따라서 이번 변경은 **실제로 사용된 수평 접근 경로의 파지 후 retreat**에만
+적용한다. Top-down 접근이 실제로 실행된 경우에는 파지 후 더 아래로 내려가지
+않고 기존처럼 TOOL `-Z`, 즉 world `+Z` 방향으로 상승한다.
+
+### 변경된 수평 접근 후 분리 정책
+
+기존에는 파지 진입 경로를 그대로 정면 후진했다. 이제는 다음 조건을 모두
+만족할 때만 `base_link -Z` 방향으로 `100mm` 내려서 줄기 분리를 시도한다.
+
+```text
+horizontal grasp complete
+ -> detected-neighbor swept corridor 검사
+ -> minimum Z 검사
+ -> cuRobo 하강 endpoint/path candidate 검증
+ -> MoveLine BASE REL [0, 0, -100mm] 실행
+ -> place 또는 다음 복귀 단계
+```
+
+하강 corridor는 파지한 과실 반경 `45mm`, 이웃 과실 sphere 반경 `30mm`,
+추가 여유 `15mm`를 합친 `90mm`를 요구한다. 파지 시작 시점에 등록한 이웃 과실
+snapshot을 사용하므로 로봇 이동 중 perception 출력이 바뀌어도 검사 기준이
+갑자기 변하지 않는다.
+
+### Fallback 및 안전 경계
+
+- 이웃 과실 corridor가 막혔거나 cuRobo endpoint 검증이 실패하면 기존
+  정면 후진 retreat으로 fallback한다.
+- 하강 MoveLine이 시작된 뒤 실패하면 추가 fallback 이동을 금지하고 현재
+  자세에서 hold한다.
+- cuRobo 검증은 하강 endpoint에 도달 가능한 collision-aware 경로 후보를
+  확인한다. 실제 실행은 정확한 `base_link -Z` MoveLine이며, 이 직선 경로는
+  검출된 과실 swept corridor로 별도 보호한다.
+- 잎과 줄기는 현재 cuRobo world 및 corridor 모델에 없으므로 잎/줄기 접촉
+  회피는 보장하지 않는다.
+- 현재 단계는 **코드 검증 완료, 하강 detach 실기 미검증**이다.
+
+### 실기 확인 로그
+
+하강이 허용되면 다음 로그가 순서대로 보여야 한다.
+
+```text
+downward_retreat_corridor_check: clear=true
+downward_retreat_endpoint_check: accepted=true
+4 downward detach retreat — BASE -Z 100.0mm
+DETACH_DOWNWARD_BASE_Z BASE REL xyz=[0.0, 0.0, -100.0]mm
+```
+
+하강이 거부되면 `DOWNWARD_RETREAT_BLOCKED` 또는
+`DOWNWARD_RETREAT_ENDPOINT_REJECTED` 이후 `RETREAT_STRAIGHT_REVERSE`가 실행된다.

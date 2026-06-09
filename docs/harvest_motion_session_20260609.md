@@ -181,3 +181,41 @@ DETACH_DOWNWARD_BASE_Z BASE REL xyz=[0.0, 0.0, -100.0]mm
 
 하강이 거부되면 `DOWNWARD_RETREAT_BLOCKED` 또는
 `DOWNWARD_RETREAT_ENDPOINT_REJECTED` 이후 `RETREAT_STRAIGHT_REVERSE`가 실행된다.
+
+## Leftmost Horizontal Fallback Fine Tuning
+
+### 11:11 실기 관찰
+
+맨 왼쪽 과실에 수평 `-5deg` fallback으로 접근했으나, 전날 파지 관찰 경로보다
+아주 약간 오른쪽으로 빗겨가고 진입 깊이가 부족했다.
+
+비교 로그:
+
+| 항목 | 이전 파지 관찰 run | 이번 run |
+| --- | ---: | ---: |
+| run ID | `20260609T103947-913da046` | `20260609T111119-3d421ffc` |
+| raw target X | `-354.9mm` | `-348.5mm` |
+| 기존 X correction | `+10mm` | `+10mm` |
+| corrected target X | `-344.9mm` | `-338.5mm` |
+| 선택 grasp offset | `50mm` | `50mm` |
+| 실제 variant | horizontal `-5deg` | horizontal `-5deg` |
+
+이번 detection target이 이전보다 약 `6.4mm` 오른쪽에서 생성된 상태에서 고정
+`+10mm` 보정이 다시 적용되어 corrected target이 더 오른쪽으로 이동했다. 또한
+`40mm` 깊이 후보가 IK 실패하면 기존에는 바로 `50mm` 후보를 선택하여, 중간의
+더 깊은 유효 경로를 검사하지 않았다.
+
+### 조정
+
+```text
+LEFTMOST_GRASP_X_CORR_M: +10mm -> +5mm
+LEFTMOST_GRASP_RETRY_OFFSETS: [40, 50, 70]mm -> [40, 45, 50, 70]mm
+```
+
+- 오른쪽 편차를 줄이기 위해 X 보정을 절반으로 낮췄다.
+- `40mm` endpoint가 IK 실패할 때 `45mm` endpoint를 추가로 검증하여, 기존
+  `50mm`보다 최대 `5mm` 더 깊게 진입할 수 있게 했다.
+- 검증되지 않은 endpoint를 향해 MoveLine을 강제로 연장하지 않는다.
+- 다른 과실의 좌표 보정 및 깊이 후보는 변경하지 않았다.
+
+현재 단계는 **코드/빌드 검증 대상이며, 새 `+5mm / 45mm` 설정은 실기 미검증**이다.

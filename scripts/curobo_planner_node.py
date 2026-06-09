@@ -31,7 +31,8 @@ from runtime_jsonl_logger import RuntimeJsonlLogger
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
 GRASP_RETRY_OFFSETS  = [0.015, 0.030, 0.040, 0.050, 0.070]
-LEFTMOST_GRASP_X_CORR_M = 0.010   # x < -300mm: ELBOW_UP 드리프트 보정 (+X, 오른쪽으로 10mm)
+LEFTMOST_GRASP_RETRY_OFFSETS = [0.040, 0.045, 0.050, 0.070]
+LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: detection 흔들림을 고려해 +X 보정을 5mm로 제한
 LEFTMOST_TOP_DOWN_X_THRESHOLD_M = -0.300
 GRASP_Z_BIAS         = 0.000    # fusion이 KP0→KP2 줄기 방향 보정을 적용하므로 중복 Z 보정 금지
 PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
@@ -303,6 +304,8 @@ class CuroboPlanner(Node):
             "node_start",
             wall_quat_wxyz=WALL_QUAT_WXYZ,
             grasp_retry_offsets_m=GRASP_RETRY_OFFSETS,
+            leftmost_grasp_retry_offsets_m=LEFTMOST_GRASP_RETRY_OFFSETS,
+            leftmost_grasp_x_correction_m=LEFTMOST_GRASP_X_CORR_M,
             pre_approach_offset_m=PRE_APPROACH_OFFSET,
             top_down_quat_wxyz=TOP_DOWN_QUAT_WXYZ,
             top_down_x_threshold_m=LEFTMOST_TOP_DOWN_X_THRESHOLD_M,
@@ -333,6 +336,10 @@ class CuroboPlanner(Node):
             f"quat={TOP_DOWN_QUAT_WXYZ} "
             f"tool_z={np.round(top_down_approach_dir, 4).tolist()} "
             f"tool_x={np.round(top_down_tool_x, 4).tolist()}")
+        self.get_logger().info(
+            f"  LEFTMOST horizontal fallback x_corr="
+            f"{LEFTMOST_GRASP_X_CORR_M*1000:+.0f}mm "
+            f"offsets_mm={[round(v*1000) for v in LEFTMOST_GRASP_RETRY_OFFSETS]}")
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
         self.get_logger().info(
@@ -508,8 +515,8 @@ class CuroboPlanner(Node):
         if straw[0] > 0.25:
             return [-0.03, 0.0]
         if straw[0] < -0.30:
-            # x < -300mm: 0.015/0.030 IK 항상 실패, 0.040(y=0.472m)부터 시도
-            return [o for o in GRASP_RETRY_OFFSETS if o >= 0.040]
+            # 40mm가 IK 실패할 때 기존 50mm로 바로 물러나지 않고 45mm를 검사한다.
+            return LEFTMOST_GRASP_RETRY_OFFSETS
         return GRASP_RETRY_OFFSETS
 
     def call_trigger(self, client):

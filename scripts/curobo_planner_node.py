@@ -35,7 +35,8 @@ LEFTMOST_GRASP_RETRY_OFFSETS = [0.030, 0.035, 0.040, 0.045, 0.050, 0.070]
 LEFTMOST_DEEP_IK_SEEDS = 128
 LEFTMOST_DEEP_IK_MAX_ATTEMPTS = 4
 LEFTMOST_DEEP_IK_TIMEOUT_SEC = 3.0
-LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: detection 흔들림을 고려해 +X 보정을 5mm로 제한
+LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: +X 보정 (ELBOW_UP 드리프트 보정)
+LEFTMOST_GRASP_Z_CORR_M = 0.030   # x < -300mm: +Z 보정 (다른 딸기 파지 높이에 맞춤)
 LEFTMOST_EXTRA_ADVANCE_REQUEST_M = 0.065  # 실기 요청값; wall safety gate가 실제 실행량을 제한
 LEFTMOST_WALL_SAFETY_MARGIN_M = -0.030   # 실기 확인: 줄기가 모델 벽 30mm 안쪽 → 음수로 80mm extra 허용
 # 근거: 2026-06-09 x=-345mm target, 210mm 진입 성공, 역진 정상
@@ -1271,6 +1272,7 @@ class CuroboPlanner(Node):
 
         if raw_straw[0] < -0.30:
             straw[0] += LEFTMOST_GRASP_X_CORR_M
+            straw[2] += LEFTMOST_GRASP_Z_CORR_M
 
         # 2. Grasp (cuRobo 2-step): pre-approach → grasp
         n_offsets = len(grasp_retry_offsets)

@@ -1803,12 +1803,12 @@ class CuroboPlanner(Node):
             self.pick_complete_pub.publish(Empty())
             return
 
-        # 맨 왼쪽 target의 수평 fallback은 실기에서 파지 홈까지 진입이 부족했다.
-        # 요청량을 그대로 실행하면 모델상 stem/wall을 관통할 수 있으므로, 선택된
-        # stand-off에서 최소 wall safety margin을 뺀 거리까지만 저속 추가 진입한다.
+        # 실기 확인: 모든 벽면 딸기 줄기는 모델 벽 앞면보다 ~30mm 안쪽에 위치.
+        # wall_margin=-30mm이면 available = offset+30mm → 80mm extra 자동 실행.
+        # rightmost(x>250mm)는 offsets[-0.03, 0.0]으로 이미 깊게 진입하므로 제외.
         extra_advance_m = 0.0
         if (
-            raw_straw[0] < LEFTMOST_TOP_DOWN_X_THRESHOLD_M
+            raw_straw[0] <= 0.25
             and self._leftmost_extra_advance_request_m > 0.0
         ):
             available_extra_m = max(

@@ -118,3 +118,27 @@ SUCCESS
 
 다음 평가 전에는 `VERIFY_GRASP / VERIFY_DETACH` 결과 코드를 구현하고, fresh tray
 localization을 사용한 단일 release 승인 실험을 수행해야 한다.
+
+## 2026-06-09 Leftmost Grasp Path Verification
+
+맨 왼쪽 과실의 파지 관찰 실행
+`20260609T103947-913da046`을 runtime JSONL로 재검증했다.
+
+| 항목 | 검증 결과 |
+| --- | --- |
+| top-down 선택 | target `x=-354.9mm`로 분기 진입 |
+| top-down 계획 | `pre_approach_plan_failed`, 실제 모션 전 fallback |
+| 실제 접근 정책 | horizontal fallback, target X `+10mm` 보정 |
+| 실제 grasp variant | base X-axis `-5deg` |
+| 실제 approach direction | `[0, 0.9962, -0.0872]` |
+| 파지 관찰 | 사용자 실기 관찰상 잘 잡음 |
+| 자동 파지 검증 | `GRASP_UNVERIFIED`, hardware position read 실패 |
+| detach 검증 | `DETACH_UNVERIFIED` |
+
+결론:
+
+- **해결된 문제:** 맨 왼쪽 과실에 접근하지 못하던 문제는 top-down 계획 실패를
+  실제 실행 전에 감지하고 수평 `-5deg` fallback으로 전환하여, 사용자 관찰상
+  파지 가능한 상태가 되었다.
+- **해결되지 않은 문제:** top-down 파지 자체는 아직 실행 성공 사례가 없다.
+- 센서 기반 성공 근거가 없으므로 정량 수확 성공률에는 포함하지 않는다.

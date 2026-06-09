@@ -71,6 +71,59 @@ leftmost target
 
 현재 단계는 **코드 및 이론 축 검증 완료, 실기 미검증**이다.
 
+## Leftmost Grasp Verification Verdict
+
+### 판정
+
+맨 왼쪽 딸기를 잘 잡았다고 관찰한 실행은 **top-down 파지 성공이 아니다**.
+runtime JSONL의 실행 경로를 대조한 결과, top-down은 계획 단계에서 실패했고
+기존 수평 접근 fallback이 실제로 실행되었다.
+
+검증 대상:
+
+```text
+run_id: 20260609T103947-913da046
+git_commit: 2665e17
+raw target: x=-354.9mm, y=715.9mm, z=537.7mm
+```
+
+실행 증거:
+
+```text
+top_down_attempt
+ -> approach_dir=[0, 0, -1]
+ -> top_down_fallback reason=pre_approach_plan_failed
+ -> top_down_fallback_horizontal x_correction=+10mm
+ -> grasp_variant=base X-axis -5deg
+ -> approach_dir=[0, 0.9962, -0.0872]
+ -> TOOL +Z 130mm 수평 중심 진입
+```
+
+따라서 실제 접근은 벽 방향 `+Y`가 주성분이고 아래쪽 성분이 약 `-8.7%`인
+수평 `-5deg` 접근이었다. 위에서 아래로 향하는 `[0, 0, -1]` top-down 경로는
+로봇에 실행되지 않았다.
+
+### 해결된 문제
+
+**맨 왼쪽 과실에 접근하지 못하던 문제는 계획 실패를 감지하고 수평 `-5deg`
+fallback으로 전환하는 정책을 통해 실기 관찰상 파지 가능한 상태가 되었다.**
+
+이 결과는 다음 범위에서 해결된 것으로 기록한다.
+
+- 맨 왼쪽 target을 별도 분기로 식별
+- 실행 불가능한 top-down pre-approach를 실제 모션 전에 차단
+- fallback 시 target X를 `+10mm` 보정
+- 수평 `-5deg` 경로로 실제 gripper close 및 사용자 관찰상 파지 도달
+
+### 아직 해결되지 않은 항목
+
+- top-down 접근 자체는 `pre_approach_plan_failed`로 아직 실행 성공 사례가 없다.
+- `verify_grasp=GRASP_UNVERIFIED`, `present_position=-1`이므로 센서 기반 파지 성공
+  증거는 없다.
+- 해당 실행의 detach도 `DETACH_UNVERIFIED`다.
+- 따라서 정량 KPI에는 `SUCCESS`로 집계하지 않고
+  `experimentally observed grasp / sensor unverified`로 분류한다.
+
 ## Guarded Downward Detach Retreat
 
 ### 실기 관찰과 적용 범위

@@ -463,3 +463,13 @@ PRE_APPROACH_SETTLE_SEC: 없음 -> 0.5s
 
 extra advance, Z bias, BASE -Z detach pull 등 이후 최적화는 유지한다. 이 복원
 설정은 코드/빌드 검증 대상이며 실기 재검증 전이다.
+
+### 6cm pre 재검증
+
+직전 측방 편차가 pre-approach 거리보다 해당 줄기 형상 또는 비전 검출점의 영향일
+가능성을 분리하기 위해 `PRE_APPROACH_OFFSET=60mm`로 다시 설정했다.
+
+- 10mm 최종 직선 접근을 허용하는 최소거리 수정은 유지한다.
+- spline 도착 후 `0.5s` 정지도 유지한다.
+- 다른 접근 깊이, Z bias, detach/retreat 설정은 변경하지 않았다.
+- 이번 결과로 6cm/18cm 접근 정확도를 같은 조건에서 비교한다.

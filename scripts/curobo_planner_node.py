@@ -38,8 +38,9 @@ LEFTMOST_WALL_SAFETY_MARGIN_M = -0.030   # 실기 확인: 줄기가 모델 벽 3
 # 근거: 2026-06-09 x=-345mm target, 210mm 진입 성공, 역진 정상
 # available_extra = grasp_offset(50mm) - margin(-30mm) = 80mm → override 불필요
 LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 50.0    # 직접 접근이므로 고속 진입
-GRASP_Z_BIAS         = 0.030    # detection이 berry body 하단을 잡으므로 +30mm 위로 보정 (peduncle 위치)
-FINAL_APPROACH_VEL_MM_S = 50.0
+GRASP_Z_BIAS             = 0.030    # detection이 berry body 하단을 잡으므로 +30mm 위로 보정
+PRE_APPROACH_OFFSET      = 0.06     # 직선 접근 방향 확보를 위한 정지점 (6cm, 구 18cm)
+FINAL_APPROACH_VEL_MM_S  = 50.0
 FINAL_APPROACH_ACC_MM_S2 = 60.0
 RETREAT_VEL_MM_S         = 80.0  # 직선 retreat — approach보다 고속으로 줄기 분리
 RETREAT_ACC_MM_S2         = 100.0
@@ -1259,14 +1260,18 @@ class CuroboPlanner(Node):
         if raw_straw[0] < -0.30:
             straw[0] += LEFTMOST_GRASP_X_CORR_M
 
-        # 2. Grasp (cuRobo 2-step): pre-approach → grasp
+        # 2. Grasp (cuRobo 2-step): 6cm pre-approach → 직선 진입
+        # pre-approach는 올바른 방향에서 직선 진입을 보장하기 위한 최소 정지점.
+        # 구 18cm → 6cm로 단축: 직선 방향 확보 + 계획 시간 유지.
         n_offsets = len(grasp_retry_offsets)
         n_quats   = len(GRASP_QUAT_RETRY_VARIANTS)
         self.get_logger().info(
-            f"2 grasp (CuRobo 1-step) — trying {n_offsets} offsets × {n_quats} quats "
+            f"2 grasp (CuRobo 2-step {PRE_APPROACH_OFFSET*100:.0f}cm pre) — "
+            f"trying {n_offsets} offsets × {n_quats} quats "
             f"| target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
             f"| start_J1={np.rad2deg(self.current_joints[0]):.1f}°")
-        ret_grasp = None   # grasp plan
+        ret_pre   = None
+        ret_grasp = None
         used_grasp_offset = None
         used_grasp_variant = None
         used_approach_dir = None
@@ -1279,29 +1284,33 @@ class CuroboPlanner(Node):
             else:
                 q_retry = quat_multiply_wxyz(WALL_QUAT_WXYZ, q_delta)
             approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
+            ee_pre = straw - (PRE_APPROACH_OFFSET + GRIPPER_LEN) * approach_dir
+            r_pre_for_variant = self.plan(
+                self.current_joints, ee_pre.tolist(), q_retry, num_ik_seeds=48
+            )
+            if r_pre_for_variant is None:
+                grasp_attempt += len(grasp_retry_offsets)
+                continue
+            pre_joints = r_pre_for_variant[0][-1].tolist()
 
             for grasp_offset in grasp_retry_offsets:
                 grasp_attempt += 1
                 ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
-                r_grasp = self.plan(
-                    self.current_joints,
-                    ee_g_try.tolist(),
-                    q_retry,
-                    num_ik_seeds=48,
-                )
+                r_grasp = self.plan(pre_joints, ee_g_try.tolist(), q_retry, num_ik_seeds=32)
                 if r_grasp is None:
                     continue
+                ret_pre   = r_pre_for_variant
                 ret_grasp = r_grasp
                 used_grasp_offset = grasp_offset
                 used_grasp_variant = (quat_frame, axis, quat_deg)
                 used_approach_dir = approach_dir
                 used_grasp_ee_pos = ee_g_try.copy()
                 break
-            if ret_grasp is not None:
+            if ret_pre is not None:
                 break
 
         if (
-            ret_grasp is not None
+            ret_pre is not None
             and raw_straw[0] < -0.30
             and used_grasp_offset >= 0.050
         ):
@@ -1318,28 +1327,31 @@ class CuroboPlanner(Node):
                 reason="deeper_endpoints_rejected",
             )
 
-        if ret_grasp is None:
+        if ret_pre is None:
             self.get_logger().error(
                 f"ABORT: grasp 전체 실패 — {grasp_attempt}개 후보 모두 reject "
                 f"(target=({straw[0]*1000:.0f},{straw[1]*1000:.0f},{straw[2]*1000:.0f})mm "
                 f"start_J=[{', '.join(f'{np.rad2deg(v):.0f}' for v in self.current_joints)}]°)")
-            self.get_logger().warn(
-                "No grasp motion executed; robot remains at the taught scan pose. "
-                "The scan-pose gripper tilt is not the requested WALL_QUAT orientation.")
             self._clear_neighbor_obstacles()
             self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
             return
 
-        # grasp 위치로 직접 이동
-        if not self.execute_spline(*ret_grasp):
-            self.get_logger().error(
-                f"ABORT: grasp spline 실행 실패 "
-                f"(offset={used_grasp_offset:+.3f}m variant={used_grasp_variant})")
+        # pre-approach 실행 후 직선 진입
+        final_approach_distance = PRE_APPROACH_OFFSET - used_grasp_offset
+        if not self.execute_spline(*ret_pre):
+            self.get_logger().error("ABORT: pre-approach spline 실패")
             self._clear_neighbor_obstacles()
             self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
             return
+        if final_approach_distance > 0.001:
+            if not self.execute_tool_z_line(final_approach_distance):
+                self.get_logger().error("ABORT: 직선 진입 실패")
+                self._clear_neighbor_obstacles()
+                self._reset_gripper()
+                self.pick_complete_pub.publish(Empty())
+                return
 
         # 실기 확인: 모든 벽면 딸기 줄기는 모델 벽 앞면보다 ~30mm 안쪽에 위치.
         # wall_margin=-30mm이면 available = offset+30mm → 80mm extra 자동 실행.
@@ -1422,10 +1434,8 @@ class CuroboPlanner(Node):
         )
         self.get_logger().info(
             f"GRASP_POSE_REACHED — offset={used_grasp_offset:+.3f}m "
-            f"variant={used_grasp_variant} "
-            f"approach_dir={np.round(used_approach_dir, 4).tolist()} "
-            f"elevation={np.degrees(np.arcsin(np.clip(used_approach_dir[2], -1.0, 1.0))):+.1f}deg "
-            f"extra_advance_m={extra_advance_m*1000:.1f}mm "
+            f"pre={PRE_APPROACH_OFFSET*100:.0f}cm+{final_approach_distance*1000:.0f}mm+{extra_advance_m*1000:.0f}mm "
+            f"variant={used_grasp_variant} elevation={np.degrees(np.arcsin(np.clip(used_approach_dir[2], -1.0, 1.0))):+.1f}deg "
             f"(attempt {grasp_attempt}/{n_offsets * n_quats})")
         self.runtime_log.log(
             "grasp_pose_reached",

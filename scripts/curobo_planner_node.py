@@ -36,30 +36,23 @@ LEFTMOST_DEEP_IK_SEEDS = 128
 LEFTMOST_DEEP_IK_MAX_ATTEMPTS = 4
 LEFTMOST_DEEP_IK_TIMEOUT_SEC = 3.0
 LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: detection 흔들림을 고려해 +X 보정을 5mm로 제한
-LEFTMOST_TOP_DOWN_X_THRESHOLD_M = -0.300
-LEFTMOST_EXTRA_ADVANCE_REQUEST_M = 0.080  # 실기 요청값; wall safety gate가 실제 실행량을 제한
+LEFTMOST_EXTRA_ADVANCE_REQUEST_M = 0.065  # 실기 요청값; wall safety gate가 실제 실행량을 제한
 LEFTMOST_WALL_SAFETY_MARGIN_M = -0.030   # 실기 확인: 줄기가 모델 벽 30mm 안쪽 → 음수로 80mm extra 허용
 # 근거: 2026-06-09 x=-345mm target, 210mm 진입 성공, 역진 정상
 # available_extra = grasp_offset(50mm) - margin(-30mm) = 80mm → override 불필요
-LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 10.0    # 미모델링 잎/줄기 구간 저속 진입
+LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 30.0    # 미모델링 잎/줄기 구간 저속 진입
 GRASP_Z_BIAS         = 0.000    # fusion이 KP0→KP2 줄기 방향 보정을 적용하므로 중복 Z 보정 금지
 PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
-PRE_APPROACH_SETTLE_SEC = 1.0  # 자세/파지 위치 확정 후 완전 정지
-FINAL_APPROACH_VEL_MM_S = 20.0 # pre-approach → grasp TOOL +Z 저속 직선 진입
-FINAL_APPROACH_ACC_MM_S2 = 30.0
-FINAL_APPROACH_SETTLE_SEC = 0.5
+PRE_APPROACH_SETTLE_SEC = 0.5  # 자세/파지 위치 확정 후 완전 정지
+FINAL_APPROACH_VEL_MM_S = 50.0 # pre-approach → grasp TOOL +Z 저속 직선 진입
+FINAL_APPROACH_ACC_MM_S2 = 60.0
+FINAL_APPROACH_SETTLE_SEC = 0.3
 RETREAT_VEL_MM_S         = 80.0  # 직선 retreat — approach보다 고속으로 줄기 분리
 RETREAT_ACC_MM_S2         = 100.0
 STRAIGHT_RETREAT_SETTLE_SEC = 0.5
 NEIGHBOR_SPHERE_RADIUS_M = 0.030
-DETACH_PITCH_DOWN_DEG  = 20.0   # BASE-X 축 기준 피치 각도 (아래로 당기기)
-DETACH_PULL_DOWN_MM    = 30.0   # 동시 BASE -Z 이동 (mm)
-DETACH_PITCH_VEL_DEG_S = 25.0   # 각속도
-# 이전 downward detach 파라미터 (미사용 — _try_downward_detach_retreat 제거됨)
-DOWNWARD_DETACH_DISTANCE_M = 0.100
-HELD_FRUIT_RETREAT_RADIUS_M = 0.045
-DOWNWARD_RETREAT_CLEARANCE_M = 0.015
-DOWNWARD_RETREAT_MIN_Z_M = 0.250
+DETACH_PULL_DOWN_MM  = 40.0   # 파지 후 BASE -Z 당기기 거리 (mm)
+DETACH_PULL_VEL_MM_S = 50.0   # 저속 분리 (줄기 충격 방지)
 
 GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
@@ -73,13 +66,6 @@ GRASP_QUAT_RETRY_VARIANTS: list = [
     ("base",  [1, 0, 0],   0.0),  # 수평 (3차 — 잎 많은 경우 밀릴 수 있음)
     ("base",  [1, 0, 0],  +5.0),  # 5° 위 (4차)
 ]
-
-# 맨 왼쪽 과실의 수평 진입 경로가 잎에 막힐 때만 사용하는 실험적 접근.
-# TOOL +Z -> world -Z, TOOL +X -> world +Y. 실기 교시값이 아닌 이론값이므로
-# 첫 검증은 clear-space / low-speed / single-target로 수행한다.
-TOP_DOWN_QUAT_WXYZ = [0.0, 0.70710678, 0.70710678, 0.0]
-TOP_DOWN_PRE_APPROACH_Z_OFFSET_M = 0.150
-TOP_DOWN_WALL_CLEARANCE_M = 0.050
 
 CARTESIAN_PLAN_MAX_ATTEMPTS = 2
 CARTESIAN_PLAN_TIMEOUT_SEC  = 1.2
@@ -336,20 +322,12 @@ class CuroboPlanner(Node):
             leftmost_wall_safety_margin_m=self._leftmost_wall_safety_margin_m,
             leftmost_allow_wall_model_override=self._leftmost_allow_wall_model_override,
             pre_approach_offset_m=PRE_APPROACH_OFFSET,
-            top_down_quat_wxyz=TOP_DOWN_QUAT_WXYZ,
-            top_down_x_threshold_m=LEFTMOST_TOP_DOWN_X_THRESHOLD_M,
-            top_down_pre_approach_z_offset_m=TOP_DOWN_PRE_APPROACH_Z_OFFSET_M,
-            top_down_wall_clearance_m=TOP_DOWN_WALL_CLEARANCE_M,
             enable_marker_place=self._enable_marker_place,
             execute_marker_place_release=self._execute_marker_place_release,
             marker_place_max_age_sec=self._marker_place_max_age_sec,
         )
         base_approach_dir = np.array(quat_rotate_vec(WALL_QUAT_WXYZ, [0.0, 0.0, 1.0]))
         base_elevation_deg = float(np.degrees(np.arcsin(np.clip(base_approach_dir[2], -1.0, 1.0))))
-        top_down_approach_dir = np.array(
-            quat_rotate_vec(TOP_DOWN_QUAT_WXYZ, [0.0, 0.0, 1.0]))
-        top_down_tool_x = np.array(
-            quat_rotate_vec(TOP_DOWN_QUAT_WXYZ, [1.0, 0.0, 0.0]))
         self.get_logger().info(
             f"  ENV_CUBOIDS={len(self.static_cuboids)}  "
             f"SELF_COLLISION={USE_CUROBO_SELF_COLLISION}")
@@ -360,11 +338,6 @@ class CuroboPlanner(Node):
             f"  WALL_QUAT_WXYZ={WALL_QUAT_WXYZ} "
             f"approach_dir={np.round(base_approach_dir, 4).tolist()} "
             f"elevation={base_elevation_deg:+.1f}deg  variants={len(GRASP_QUAT_RETRY_VARIANTS)}")
-        self.get_logger().info(
-            f"  TOP_DOWN x<{LEFTMOST_TOP_DOWN_X_THRESHOLD_M*1000:.0f}mm "
-            f"quat={TOP_DOWN_QUAT_WXYZ} "
-            f"tool_z={np.round(top_down_approach_dir, 4).tolist()} "
-            f"tool_x={np.round(top_down_tool_x, 4).tolist()}")
         self.get_logger().info(
             f"  LEFTMOST horizontal fallback x_corr="
             f"{LEFTMOST_GRASP_X_CORR_M*1000:+.0f}mm "
@@ -943,187 +916,15 @@ class CuroboPlanner(Node):
         )
         return ok
 
-    def execute_base_relative_line(self, delta_xyz_m, motion_label,
-                                   vel_mm_s: float = None,
-                                   acc_mm_s2: float = None) -> bool:
-        """현재 TCP 자세를 유지하고 base_link 기준 상대 직선 이동."""
-        delta = np.asarray(delta_xyz_m, dtype=float)
-        if delta.shape != (3,):
-            self.get_logger().error(f"{motion_label}: expected xyz delta")
-            return False
-        distance_m = float(np.linalg.norm(delta))
-        if not 0.02 <= distance_m <= PRE_APPROACH_OFFSET:
-            self.get_logger().error(
-                f"MoveLine rejected: {motion_label} distance={distance_m*1000:.1f}mm")
-            return False
-        if not self.cli_movel.wait_for_service(timeout_sec=3.0):
-            self.get_logger().error("MoveLine not available")
-            return False
-
-        vel = vel_mm_s if vel_mm_s is not None else RETREAT_VEL_MM_S
-        acc = acc_mm_s2 if acc_mm_s2 is not None else RETREAT_ACC_MM_S2
-        req = MoveLine.Request()
-        req.pos = [
-            float(delta[0] * 1000.0),
-            float(delta[1] * 1000.0),
-            float(delta[2] * 1000.0),
-            0.0, 0.0, 0.0,
-        ]
-        req.vel = [vel, 10.0]
-        req.acc = [acc, 20.0]
-        req.time = 0.0
-        req.radius = 0.0
-        req.ref = 0         # DR_BASE
-        req.mode = 1        # DR_MV_MOD_REL
-        req.blend_type = 0
-        req.sync_type = 0
-
-        self.get_logger().info(
-            f"{motion_label} BASE REL xyz="
-            f"{[round(v, 1) for v in req.pos[:3]]}mm vel={vel:.1f}mm/s")
-        self.runtime_log.log(
-            "motion_command",
-            controller="doosan_move_line",
-            label=motion_label,
-            service="/dsr01/motion/move_line",
-            reference_frame="base",
-            relative_pose_mm_deg=req.pos,
-            velocity=req.vel,
-            acceleration=req.acc,
-        )
-        future = self.cli_movel.call_async(req)
-        t0 = time.time()
-        while not future.done() and (time.time() - t0) < 30.0:
-            time.sleep(0.05)
-        ok = future.done() and future.result() and future.result().success
-        if not ok:
-            self.get_logger().error(f"{motion_label} MoveLine failed/timeout")
-        self.runtime_log.log(
-            "motion_result",
-            controller="doosan_move_line",
-            label=motion_label,
-            success=bool(ok),
-            current_joints_rad=self.current_joints,
-        )
-        return ok
-
-    def _downward_retreat_corridor_clear(self, target_pos: np.ndarray,
-                                         distance_m: float) -> bool:
-        """검출된 이웃 과실 기준으로 held-fruit 하강 swept corridor를 검사."""
-        start = np.asarray(target_pos, dtype=float)
-        end = start + np.array([0.0, 0.0, -distance_m])
-        required_clearance = (
-            HELD_FRUIT_RETREAT_RADIUS_M
-            + NEIGHBOR_SPHERE_RADIUS_M
-            + DOWNWARD_RETREAT_CLEARANCE_M
-        )
-        blockers = []
-        if end[2] < DOWNWARD_RETREAT_MIN_Z_M:
-            blockers.append({
-                "reason": "minimum_z",
-                "end_z_m": float(end[2]),
-                "minimum_z_m": DOWNWARD_RETREAT_MIN_Z_M,
-            })
-
-        segment = end - start
-        segment_len_sq = float(np.dot(segment, segment))
-        for i, neighbor in enumerate(self._registered_neighbor_positions):
-            t = float(np.dot(neighbor - start, segment) / segment_len_sq)
-            t = float(np.clip(t, 0.0, 1.0))
-            closest = start + t * segment
-            clearance = float(np.linalg.norm(neighbor - closest))
-            if clearance < required_clearance:
-                blockers.append({
-                    "reason": "detected_neighbor",
-                    "neighbor_index": i,
-                    "neighbor_m": neighbor,
-                    "clearance_m": clearance,
-                    "required_clearance_m": required_clearance,
-                })
-
-        clear = not blockers
-        self.runtime_log.log(
-            "downward_retreat_corridor_check",
-            clear=clear,
-            start_target_m=start,
-            end_target_m=end,
-            distance_m=distance_m,
-            detected_neighbor_count=len(self._registered_neighbor_positions),
-            required_clearance_m=required_clearance,
-            blockers=blockers,
-            unmodeled_geometry="leaves_and_stems",
-        )
-        if not clear:
-            self.get_logger().warn(
-                f"DOWNWARD_RETREAT_BLOCKED: {len(blockers)} corridor blocker(s); "
-                "falling back to straight reverse")
-        return clear
-
-    def _try_downward_detach_retreat(self, target_pos, grasp_joints,
-                                     grasp_ee_pos, grasp_quat_wxyz) -> str:
-        """가능하면 world -Z 하강. 반환값: executed/fallback/failed_after_motion."""
-        if not self._downward_retreat_corridor_clear(
-                target_pos, DOWNWARD_DETACH_DISTANCE_M):
-            return "fallback"
-
-        endpoint = np.asarray(grasp_ee_pos, dtype=float) + np.array(
-            [0.0, 0.0, -DOWNWARD_DETACH_DISTANCE_M])
-        endpoint_plan = self.plan(
-            grasp_joints, endpoint.tolist(), grasp_quat_wxyz, num_ik_seeds=48
-        )
-        if endpoint_plan is None:
-            self.get_logger().warn(
-                "DOWNWARD_RETREAT_ENDPOINT_REJECTED by cuRobo; "
-                "falling back to straight reverse")
-            self.runtime_log.log(
-                "downward_retreat_endpoint_check",
-                accepted=False,
-                endpoint_ee_m=endpoint,
-                reason="curobo_plan_failed",
-            )
-            return "fallback"
-
-        self.get_logger().info(
-            f"4 downward detach retreat — BASE -Z "
-            f"{DOWNWARD_DETACH_DISTANCE_M*1000:.1f}mm; "
-            "detected-fruit corridor and cuRobo endpoint validated")
-        self.runtime_log.log(
-            "downward_retreat_endpoint_check",
-            accepted=True,
-            endpoint_ee_m=endpoint,
-            note=(
-                "cuRobo validates endpoint/path candidate; exact base-relative "
-                "MoveLine is guarded by detected-fruit swept corridor; "
-                "leaves/stems are not modeled"
-            ),
-        )
-        if not self.execute_base_relative_line(
-                [0.0, 0.0, -DOWNWARD_DETACH_DISTANCE_M],
-                motion_label="DETACH_DOWNWARD_BASE_Z",
-                vel_mm_s=RETREAT_VEL_MM_S,
-                acc_mm_s2=RETREAT_ACC_MM_S2):
-            return "failed_after_motion"
-        return "executed"
-
     def _execute_pitch_detach(self) -> bool:
-        """파지 후 BASE -Z 이동 + BASE-X 축 피치 회전으로 줄기 분리.
-
-        BASE frame 사용 이유: TOOL frame 회전 인덱스가 예상과 달리 수평 이동을 만들었음.
-        BASE frame에서 drx (pos[3]) = BASE X축(world +X, 오른쪽) 기준 회전:
-          -DETACH_PITCH_DOWN_DEG → TOOL Z([0,1,0])가 [0, 0.866, -0.5] 방향으로 기울어짐
-          즉 그리퍼 코가 아래(-Z world)를 향함.
-        동시에 -Z 이동 30mm로 줄기에 아래 방향 장력을 추가.
-        """
+        """파지 후 TCP를 BASE -Z 방향으로 당겨 줄기 분리. 회전 없음."""
         if not self.cli_movel.wait_for_service(timeout_sec=3.0):
-            self.get_logger().warn("DETACH_PITCH: MoveLine service unavailable")
+            self.get_logger().warn("DETACH_PULL: MoveLine service unavailable")
             return False
         req = MoveLine.Request()
-        # BASE frame relative: [dx, dy, dz(mm), drx(deg), dry(deg), drz(deg)]
-        # drx=-20° around world +X → TOOL Z tilts toward world -Z (down)
-        req.pos = [0.0, 0.0, -float(DETACH_PULL_DOWN_MM),
-                   -float(DETACH_PITCH_DOWN_DEG), 0.0, 0.0]
-        req.vel = [20.0, float(DETACH_PITCH_VEL_DEG_S)]
-        req.acc = [30.0, 40.0]
+        req.pos = [0.0, 0.0, -float(DETACH_PULL_DOWN_MM), 0.0, 0.0, 0.0]
+        req.vel = [float(DETACH_PULL_VEL_MM_S), 10.0]
+        req.acc = [30.0, 20.0]
         req.time = 0.0
         req.radius = 0.0
         req.ref = 0   # BASE frame
@@ -1136,15 +937,11 @@ class CuroboPlanner(Node):
             time.sleep(0.05)
         ok = future.done() and bool(future.result() and future.result().success)
         self.get_logger().info(
-            f"DETACH_PITCH_DOWN: BASE -Z {DETACH_PULL_DOWN_MM:.0f}mm "
-            f"+ drx -{DETACH_PITCH_DOWN_DEG:.0f}° "
+            f"DETACH_PULL_DOWN: BASE -Z {DETACH_PULL_DOWN_MM:.0f}mm "
             f"→ {'OK' if ok else 'FAIL'}")
-        self.runtime_log.log(
-            "detach_pitch_down",
-            pitch_deg=DETACH_PITCH_DOWN_DEG,
-            vel_deg_s=DETACH_PITCH_VEL_DEG_S,
-            success=ok,
-        )
+        self.runtime_log.log("detach_pull_down",
+                             pull_mm=DETACH_PULL_DOWN_MM,
+                             vel_mm_s=DETACH_PULL_VEL_MM_S, success=ok)
         return ok
 
     def execute_base_line(self, posx_mm_deg, motion_label, vel_mm_s=20.0) -> bool:
@@ -1418,227 +1215,6 @@ class CuroboPlanner(Node):
         finally:
             self._pick_busy = False
 
-    def _pick_topdown(self, straw: np.ndarray, pick_start_joints) -> bool:
-        """맨 왼쪽 target의 위→아래 접근. 계획 전 실패만 수평 fallback을 허용한다."""
-        approach_dir = np.array(
-            quat_rotate_vec(TOP_DOWN_QUAT_WXYZ, [0.0, 0.0, 1.0]))
-        tool_x = np.array(
-            quat_rotate_vec(TOP_DOWN_QUAT_WXYZ, [1.0, 0.0, 0.0]))
-        if not (
-            np.allclose(approach_dir, [0.0, 0.0, -1.0], atol=1e-5)
-            and np.allclose(tool_x, [0.0, 1.0, 0.0], atol=1e-5)
-        ):
-            self.get_logger().error(
-                "TOP_DOWN_CONFIG_INVALID: quaternion axes do not match requested frame")
-            return False
-
-        # ee_link 목표다. 실제 gripper fingertip은 TOOL +Z로 GRIPPER_LEN만큼 떨어져 있다.
-        # Y는 벽 전면에서 50mm 앞(-Y)으로 유지하고, Z 방향으로만 하강한다.
-        stem_clear = straw + np.array([0.0, -TOP_DOWN_WALL_CLEARANCE_M, 0.0])
-        ee_pre = stem_clear - (
-            TOP_DOWN_PRE_APPROACH_Z_OFFSET_M + GRIPPER_LEN) * approach_dir
-        ee_grasp = stem_clear - GRIPPER_LEN * approach_dir
-
-        self.get_logger().warn(
-            "TOP_DOWN_TRIAL: theoretical orientation, no taught pose; "
-            "clear-space/low-speed physical validation required")
-        self.get_logger().info(
-            f"2 top-down grasp — stem={np.round(straw*1000).astype(int).tolist()}mm "
-            f"pre={np.round(ee_pre*1000).astype(int).tolist()}mm "
-            f"grasp={np.round(ee_grasp*1000).astype(int).tolist()}mm")
-        self.runtime_log.log(
-            "top_down_attempt",
-            target_m=straw,
-            stem_clear_m=stem_clear,
-            pre_approach_m=ee_pre,
-            grasp_endpoint_m=ee_grasp,
-            quat_wxyz=TOP_DOWN_QUAT_WXYZ,
-            approach_dir=approach_dir,
-            fallback_allowed_before_motion=True,
-        )
-
-        ret_pre = self.plan(
-            self.current_joints, ee_pre.tolist(), TOP_DOWN_QUAT_WXYZ,
-            num_ik_seeds=96)
-        if ret_pre is None:
-            self.get_logger().warn(
-                "TOP_DOWN_PLAN_FAIL pre-approach — falling back to horizontal")
-            self.runtime_log.log(
-                "top_down_fallback", reason="pre_approach_plan_failed")
-            return False
-
-        pre_joints = ret_pre[0][-1].tolist()
-        ret_grasp = self.plan(
-            pre_joints, ee_grasp.tolist(), TOP_DOWN_QUAT_WXYZ,
-            num_ik_seeds=48)
-        if ret_grasp is None:
-            self.get_logger().warn(
-                "TOP_DOWN_PLAN_FAIL grasp endpoint — falling back to horizontal")
-            self.runtime_log.log(
-                "top_down_fallback", reason="grasp_endpoint_plan_failed")
-            return False
-
-        # 이 시점부터 실제 모션을 실행하므로 실패 시 수평 재진입을 금지한다.
-        if not self.execute_spline(*ret_pre):
-            self.get_logger().error(
-                "ABORT: top-down pre-approach spline failed; horizontal fallback blocked")
-            self._clear_neighbor_obstacles()
-            self._reset_gripper()
-            self._hold_pick_sequence("top_down_pre_approach_execution_failed")
-            return True
-
-        self.get_logger().info(
-            f"TOP_DOWN_PRE_APPROACH_REACHED — settling {PRE_APPROACH_SETTLE_SEC:.1f}s "
-            f"before {TOP_DOWN_PRE_APPROACH_Z_OFFSET_M*1000:.1f}mm vertical descent")
-        time.sleep(PRE_APPROACH_SETTLE_SEC)
-        if not self.execute_tool_z_line(
-                TOP_DOWN_PRE_APPROACH_Z_OFFSET_M,
-                motion_label="TOP_DOWN_FINAL_DESCENT"):
-            self.get_logger().error(
-                "ABORT: top-down final descent failed; horizontal fallback blocked")
-            self._clear_neighbor_obstacles()
-            self._reset_gripper()
-            self._hold_pick_sequence("top_down_final_descent_failed")
-            return True
-
-        time.sleep(FINAL_APPROACH_SETTLE_SEC)
-        self.get_logger().info(
-            "GRASP_POSE_REACHED — mode=top_down "
-            f"approach_dir={np.round(approach_dir, 4).tolist()}")
-        self.runtime_log.log(
-            "grasp_pose_reached",
-            mode="top_down",
-            approach_dir=approach_dir,
-            final_approach_distance_m=TOP_DOWN_PRE_APPROACH_Z_OFFSET_M,
-            current_joints_rad=self.current_joints,
-        )
-
-        self.get_logger().info("3 close gripper")
-        self.runtime_log.log("gripper_command", command="close", mode="top_down")
-        self.call_trigger(self.cli_gripper_close)
-        time.sleep(2.0)
-
-        grasp_result, present_pos, grasp_reason = self._verify_grasp()
-        self.get_logger().info(
-            f"VERIFY_GRASP: {grasp_result} present_pos={present_pos} — {grasp_reason}")
-        self.runtime_log.log(
-            "verify_grasp",
-            result_code=grasp_result,
-            present_position=present_pos,
-            reason=grasp_reason,
-            close_command_pos=700,
-            empty_threshold=GRASP_EMPTY_POSITION_THRESHOLD,
-            mode="top_down",
-        )
-
-        self.get_logger().info(
-            f"4 top-down straight reverse retreat — rising "
-            f"{TOP_DOWN_PRE_APPROACH_Z_OFFSET_M*1000:.1f}mm")
-        if not self.execute_tool_z_line(
-                -TOP_DOWN_PRE_APPROACH_Z_OFFSET_M,
-                motion_label="TOP_DOWN_RETREAT_STRAIGHT_REVERSE",
-                vel_mm_s=RETREAT_VEL_MM_S, acc_mm_s2=RETREAT_ACC_MM_S2):
-            self.get_logger().error(
-                "ABORT: top-down straight reverse retreat failed — holding current pose")
-            self._clear_neighbor_obstacles()
-            self._hold_pick_sequence("top_down_straight_reverse_retreat_failed")
-            return True
-
-        time.sleep(STRAIGHT_RETREAT_SETTLE_SEC)
-        retreat_joints = (
-            list(self.current_joints)
-            if self.current_joints is not None
-            else ret_pre[0][-1].tolist()
-        )
-        detach_result = "DETACH_UNVERIFIED"
-        self.runtime_log.log(
-            "verify_detach",
-            result_code=detach_result,
-            grasp_result=grasp_result,
-            reason="no sensor available; top-down straight reverse retreat succeeded",
-            mode="top_down",
-        )
-
-        allow_place = grasp_result != "GRASP_EMPTY"
-        if not allow_place:
-            self.get_logger().warn(
-                "PLACE_GATE_BLOCKED (GRASP_EMPTY): jaw fully closed, nothing grabbed")
-            self.runtime_log.log(
-                "place_gate_blocked",
-                grasp_result=grasp_result,
-                reason="GRASP_EMPTY: jaw fully closed, nothing grabbed",
-                mode="top_down",
-            )
-
-        return_start_joints = retreat_joints
-        if self._enable_marker_place and allow_place:
-            place_status, place_joints = self._execute_marker_place_after_retreat(
-                retreat_joints)
-            if place_status == "success":
-                return_start_joints = place_joints
-            elif place_status == "skip":
-                self.get_logger().warn(
-                    "PLACE_SKIPPED: tray unavailable; returning to scan")
-                self.runtime_log.log(
-                    "place_skipped", reason="tray_unavailable",
-                    grasp_result=grasp_result, mode="top_down")
-            else:
-                self._clear_neighbor_obstacles()
-                self.runtime_log.log(
-                    "pick_sequence_stopped",
-                    result_code=(
-                        "MARKER_PLACE_PREVIEW_HOLD"
-                        if place_status == "preview_hold"
-                        else "MARKER_PLACE_FAILED"
-                    ),
-                    place_status=place_status,
-                    mode="top_down",
-                    current_joints_rad=self.current_joints,
-                )
-                self._hold_pick_sequence(f"marker_place_{place_status}")
-                return True
-
-        pick_start_joints_deg = self._nearest_equivalent_joints(
-            np.rad2deg(pick_start_joints).tolist())
-        ok, _ = self.plan_to_fixed_joints_pose(
-            return_start_joints, pick_start_joints_deg,
-            "pick-start scan pose after top-down pick/place",
-            skip_swing_check=True)
-        if not ok:
-            self._clear_neighbor_obstacles()
-            self.runtime_log.log(
-                "pick_sequence_stopped",
-                result_code="RETURN_TO_SCAN_FAILED",
-                mode="top_down",
-                current_joints_rad=self.current_joints,
-            )
-            self._hold_pick_sequence("top_down_return_to_scan_failed")
-            return True
-
-        self._clear_neighbor_obstacles()
-        self._reset_gripper()
-        self.pick_complete_pub.publish(Empty())
-        sequence_result_code = (
-            "DETACH_SUCCESS_UNVERIFIED"
-            if grasp_result == "GRASP_CONTACT_DETECTED"
-            else grasp_result
-        )
-        self.runtime_log.log(
-            "pick_sequence_complete",
-            result_code=sequence_result_code,
-            grasp_result=grasp_result,
-            detach_result=detach_result,
-            approach_mode="top_down",
-            return_pose="pick_start_scan_pose",
-            marker_place_enabled=self._enable_marker_place,
-            marker_place_release_executed=(
-                self._enable_marker_place and self._execute_marker_place_release),
-            current_joints_rad=self.current_joints,
-        )
-        self.get_logger().info(
-            f"=== PICK COMPLETE ({sequence_result_code}, mode=top_down) ===")
-        return True
-
     def _pick(self, msg: PoseStamped):
         p = msg.pose.position
         # 같은 셀의 다음 target을 계속 처리할 수 있도록 이번 pick이 시작된
@@ -1693,23 +1269,8 @@ class CuroboPlanner(Node):
         self._register_neighbor_obstacles(straw)
         self.motion_gen.detach_object_from_robot()
 
-        # 맨 왼쪽 target은 잎의 수평 가림을 피하기 위해 위→아래 접근을 먼저
-        # 계획한다. 계획 단계에서 실패한 경우에만 기존 수평 경로로 fallback한다.
-        if raw_straw[0] < LEFTMOST_TOP_DOWN_X_THRESHOLD_M:
-            if self._pick_topdown(straw, pick_start_joints):
-                return
-            self._clear_neighbor_obstacles()
+        if raw_straw[0] < -0.30:
             straw[0] += LEFTMOST_GRASP_X_CORR_M
-            self.get_logger().warn(
-                f"TOP_DOWN_FALLBACK_HORIZONTAL: applying existing leftmost "
-                f"X correction +{LEFTMOST_GRASP_X_CORR_M*1000:.0f}mm")
-            self.runtime_log.log(
-                "top_down_fallback_horizontal",
-                corrected_target_m=straw,
-                x_correction_m=LEFTMOST_GRASP_X_CORR_M,
-            )
-            self._register_neighbor_obstacles(straw)
-            self.motion_gen.detach_object_from_robot()
 
         # 2. Grasp (cuRobo 2-step): pre-approach → grasp
         n_offsets = len(grasp_retry_offsets)
@@ -1723,7 +1284,6 @@ class CuroboPlanner(Node):
         used_grasp_offset = None
         used_grasp_variant = None
         used_approach_dir = None
-        used_grasp_quat = None  # noqa: F841 — formerly used by _try_downward_detach_retreat
         used_grasp_ee_pos = None
         grasp_attempt = 0
         # Pre-approach depends only on orientation, not grasp offset. The old
@@ -1756,7 +1316,7 @@ class CuroboPlanner(Node):
                 # final grasp: pre-approach에서 grasp_offset까지 직선 접근
                 ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
                 is_leftmost_deep_candidate = (
-                    raw_straw[0] < LEFTMOST_TOP_DOWN_X_THRESHOLD_M
+                    raw_straw[0] < -0.30
                     and grasp_offset <= 0.045
                 )
                 r_grasp = self.plan(
@@ -1786,7 +1346,6 @@ class CuroboPlanner(Node):
                 used_grasp_offset = grasp_offset
                 used_grasp_variant = (quat_frame, axis, quat_deg)
                 used_approach_dir = approach_dir
-                used_grasp_quat = q_retry
                 used_grasp_ee_pos = ee_g_try.copy()
                 break
             if ret_pre is not None:
@@ -1794,7 +1353,7 @@ class CuroboPlanner(Node):
 
         if (
             ret_pre is not None
-            and raw_straw[0] < LEFTMOST_TOP_DOWN_X_THRESHOLD_M
+            and raw_straw[0] < -0.30
             and used_grasp_offset >= 0.050
         ):
             self.get_logger().warn(
@@ -1951,7 +1510,7 @@ class CuroboPlanner(Node):
         self.get_logger().info("3 close gripper")
         self.runtime_log.log("gripper_command", command="close")
         self.call_trigger(self.cli_gripper_close)
-        time.sleep(2.0)
+        time.sleep(1.5)
 
         # 3b. VERIFY_GRASP — 실제 그리퍼 위치를 읽어 파지 여부 판정
         grasp_result, present_pos, grasp_reason = self._verify_grasp()
@@ -1966,11 +1525,10 @@ class CuroboPlanner(Node):
             empty_threshold=GRASP_EMPTY_POSITION_THRESHOLD,
         )
 
-        # 4. 그리퍼 피치 다운으로 줄기 분리 후 직선 역진 retreat
-        # TOOL-Y 기준 +pitch → 그리퍼 코가 world -Z 방향으로 기울어지며 줄기를 꺾음
+        # 4. BASE -Z 당기기로 줄기 분리 후 직선 역진 retreat
         self.get_logger().info(
-            f"4 pitch detach — TOOL-Y +{DETACH_PITCH_DOWN_DEG:.0f}° "
-            f"at {DETACH_PITCH_VEL_DEG_S:.0f}deg/s")
+            f"4 detach pull — BASE -Z {DETACH_PULL_DOWN_MM:.0f}mm "
+            f"at {DETACH_PULL_VEL_MM_S:.0f}mm/s")
         self._execute_pitch_detach()  # 실패해도 retreat은 항상 실행
 
         # 직선 역진 retreat (extra advance 포함)

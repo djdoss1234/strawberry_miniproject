@@ -28,7 +28,8 @@ RealSense RGB + aligned depth
  -> RH-P12-RN-A close
  -> Doosan MoveLine BASE -Z: 40mm detach pull
  -> Doosan MoveLine TOOL -Z: 추가 진입 거리 직선 역주행
- -> [미구현] VERIFY_GRASP / VERIFY_DETACH
+ -> VERIFY_GRASP: gripper present position 기반 접촉/빈 파지 판정
+ -> [미구현] VERIFY_DETACH / RETAINED_AFTER_RETREAT
  -> optional guarded marker place
     -> overview -> tray-view -> marker slot above
     -> explicit release 승인 시 descend/open/above
@@ -59,7 +60,8 @@ RealSense RGB + aligned depth
 | 파지 | RH-P12-RN-A gripper service | close 명령, 실제 파지 성공은 별도 검증 필요 |
 | 분리 동작 | Doosan `MoveLine` | BASE `-Z 40mm`로 아래 방향 detach pull |
 | 초기 후퇴 | Doosan `MoveLine` | 추가 진입 거리를 TOOL `-Z`로 역주행 |
-| 파지/분리 검증 | 현재 미구현 | 사람 관찰 외 자동 성공 근거 없음 |
+| 파지 검증 | gripper present position | 접촉/빈 파지 판정 구현, hardware read와 오인 검증 필요 |
+| 분리/유지 검증 | 현재 미구현 | 사람 관찰 외 자동 성공 근거 없음 |
 | marker place | fresh tray JSON + cuRobo + MoveLine | 기본 비활성, preview/release 명시 승인형 |
 | scan pose 복귀 | cuRobo joint-space + `MoveSplineJoint` | 같은 셀의 다음 target을 위해 pick 시작 자세로 복귀 |
 
@@ -109,13 +111,43 @@ detach -> retreat: TOOL -Z MoveLine
 - marker place는 guarded optional 경로로 연결되었지만, tray localization이 300초보다
   오래되거나 release가 명시 승인되지 않으면 place를 차단하고 현재 자세에서 정지한다.
 - 현재 `grasp OK` 로그는 grasp 목표 자세 도달을 뜻하며 실제 파지/분리 성공이 아니다.
-- retreat 후 `VERIFY_GRASP / VERIFY_DETACH`가 없어 빈 파지나 미분리 상태에서도
-  fresh tray target이 있으면 place 단계로 진행할 수 있다.
+- `VERIFY_GRASP`는 구현됐지만 hardware read 실패 시 `GRASP_UNVERIFIED`로
+  fail-open한다. `VERIFY_DETACH / RETAINED_AFTER_RETREAT`는 미구현이므로
+  미분리 상태에서도 fresh tray target이 있으면 place 단계로 진행할 수 있다.
 - 잎은 현재 perception class 및 collision world에 포함되지 않는다. 따라서 과실 sphere와
   whiteboard를 피한 경로라도 실제 잎과 접촉할 수 있다.
 - 목표 위치가 안정적이어도 pose 모델이 KP0를 일관되게 잘못 찍으면 옆 접근할 수 있다.
   현재 quality guard는 명백한 저신뢰/비정상 geometry를 거부하지만, 일관된 오검출을
   완전히 판별하지는 못한다.
+
+### 파지 성공 측정 계약
+
+파지 성공은 하나의 이벤트가 아니라 다음 단계별 결과로 기록해야 한다.
+
+```text
+GRASP_POSE_REACHED
+ -> GRASP_CONTACT_DETECTED | GRASP_EMPTY | GRASP_UNVERIFIED
+ -> DETACH_SUCCESS | DETACH_FAIL | DETACH_UNVERIFIED
+ -> RETAINED_AFTER_RETREAT | DROP_DURING_RETREAT | RETENTION_UNVERIFIED
+ -> SUCCESS only when grasp + detach + retention are all verified
+```
+
+권장 KPI:
+
+| KPI | 계산식 |
+| --- | --- |
+| verification coverage | 유효 gripper 판독 / close 시도 |
+| contact detection rate | `GRASP_CONTACT_DETECTED` / 유효 gripper 판독 |
+| empty grasp rate | `GRASP_EMPTY` / 유효 gripper 판독 |
+| detach success rate | verified detach / grasp 시도 |
+| retention success rate | retreat 후 유지 / verified detach |
+| end-to-end harvest success | verified grasp+detach+retention / 전체 시도 |
+| verifier precision/recall | 자동 파지 판정과 사람 라벨 비교 |
+
+현재 `_verify_grasp()`는 present position `< 665`이면 접촉, `>= 665`이면 empty로
+판정한다. 하지만 hardware read가 실패하면 `GRASP_UNVERIFIED`이며, 잎 접촉도
+과실 파지로 오인할 수 있다. 따라서 position 판정만으로 `SUCCESS`를 선언하지
+않고, retreat 후 비전 확인 또는 force/current/tactile 근거를 추가해야 한다.
 
 ## 2026-06-09 SW 단일 과실 체크포인트
 

@@ -55,6 +55,29 @@ RealSense RGB-D
 `grasp OK`와 `pick_complete`는 실제 수확 성공을 뜻하지 않는다. 현재 자동
 판정은 `GRASP_UNVERIFIED`이므로 육안 관찰과 분리해 기록한다.
 
+## 파지 성공 정량 지표
+
+“그리퍼가 목표 자세에 도달했다”와 “딸기를 실제로 잡았다”를 분리해 측정한다.
+
+| 지표 | 계산식 / 판정 기준 | 현재 상태 |
+| --- | --- | --- |
+| Grasp verification coverage | 유효한 gripper position 판독 횟수 / close 시도 횟수 | hardware read 실패로 측정 필요 |
+| Contact detection rate | `GRASP_CONTACT_DETECTED` / 유효 판독 횟수 | position `< 665` 기준 구현됨, 검증 필요 |
+| Empty grasp rate | `GRASP_EMPTY` / 유효 판독 횟수 | position `>= 665` 기준 구현됨, 검증 필요 |
+| Detach success rate | 줄기에서 분리된 과실 수 / 파지 시도 수 | 현재 육안 라벨, 자동화 필요 |
+| Retention success rate | retreat 후에도 그리퍼에 유지된 과실 수 / 분리 성공 수 | 측정 필요 |
+| End-to-end harvest success | 파지 + 분리 + retreat 유지 성공 수 / 전체 시도 수 | 측정 필요 |
+| Grasp verifier precision/recall | 자동 접촉 판정과 사람 라벨 비교 | 라벨 데이터 수집 필요 |
+
+최소 실험 단위는 동일 SW 조건 `30회`로 설정한다. 각 시도는
+`GRASP_CONTACT_DETECTED`, `GRASP_EMPTY`, `GRASP_UNVERIFIED`, `DETACH_FAIL`,
+`DROP_DURING_RETREAT`, `SUCCESS` 중 하나로 기록한다.
+
+현재 gripper position 기반 판정은 “jaw가 완전히 닫히지 않았으므로 중간에
+무언가가 있다”는 간접 판정이다. 잎이나 파츠 접촉도 성공으로 오인할 수 있으므로,
+최종 수확 성공률은 retreat 후 카메라 확인 또는 force/current/tactile 센서와
+함께 검증해야 한다.
+
 ## AI 활용 및 의사결정
 
 Claude Code와 Codex는 ROS 로그 비교, 코드 탐색, IK branch와 파라미터 가설

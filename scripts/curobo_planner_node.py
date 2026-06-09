@@ -313,6 +313,7 @@ class CuroboPlanner(Node):
             leftmost_extra_advance_request_m=self._leftmost_extra_advance_request_m,
             leftmost_wall_safety_margin_m=self._leftmost_wall_safety_margin_m,
             leftmost_allow_wall_model_override=self._leftmost_allow_wall_model_override,
+            pre_approach_offset_m=PRE_APPROACH_OFFSET,
             enable_marker_place=self._enable_marker_place,
             execute_marker_place_release=self._execute_marker_place_release,
             marker_place_max_age_sec=self._marker_place_max_age_sec,
@@ -335,7 +336,8 @@ class CuroboPlanner(Node):
             f"offsets_mm={[round(v*1000) for v in LEFTMOST_GRASP_RETRY_OFFSETS]} "
             f"extra_request={self._leftmost_extra_advance_request_m*1000:.0f}mm "
             f"wall_margin={self._leftmost_wall_safety_margin_m*1000:.0f}mm "
-            f"wall_override={self._leftmost_allow_wall_model_override}")
+            f"wall_override={self._leftmost_allow_wall_model_override} "
+            f"pre_approach={PRE_APPROACH_OFFSET*1000:.0f}mm")
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
         self.get_logger().info(
@@ -850,11 +852,13 @@ class CuroboPlanner(Node):
         return ok
 
     def execute_tool_z_line(self, distance_m: float, motion_label="FINAL_APPROACH_STRAIGHT",
-                            vel_mm_s: float = None, acc_mm_s2: float = None) -> bool:
+                            vel_mm_s: float = None, acc_mm_s2: float = None,
+                            min_distance_m: float = 0.02) -> bool:
         """현재 TCP 자세를 유지하고 TOOL Z축 방향으로 직선 이동."""
-        if not 0.02 <= abs(distance_m) <= 0.25:
+        if not min_distance_m <= abs(distance_m) <= 0.25:
             self.get_logger().error(
-                f"MoveLine rejected: {motion_label} distance={distance_m*1000:.1f}mm")
+                f"MoveLine rejected: {motion_label} distance={distance_m*1000:.1f}mm "
+                f"allowed={min_distance_m*1000:.1f}..250.0mm")
             return False
         if not self.cli_movel.wait_for_service(timeout_sec=3.0):
             self.get_logger().error("MoveLine not available")
@@ -1295,6 +1299,11 @@ class CuroboPlanner(Node):
 
             for grasp_offset in grasp_retry_offsets:
                 grasp_attempt += 1
+                # 2-step 구조에서 grasp endpoint는 pre-approach보다 target에
+                # 가까워야 한다. 6cm pre에서 7cm offset을 허용하면 직선 진입이
+                # 음수가 되어 정확도 보장 목적이 깨진다.
+                if grasp_offset >= PRE_APPROACH_OFFSET:
+                    continue
                 ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
                 r_grasp = self.plan(pre_joints, ee_g_try.tolist(), q_retry, num_ik_seeds=32)
                 if r_grasp is None:
@@ -1346,7 +1355,9 @@ class CuroboPlanner(Node):
             self.pick_complete_pub.publish(Empty())
             return
         if final_approach_distance > 0.001:
-            if not self.execute_tool_z_line(final_approach_distance):
+            if not self.execute_tool_z_line(
+                    final_approach_distance,
+                    min_distance_m=0.005):
                 self.get_logger().error("ABORT: 직선 진입 실패")
                 self._clear_neighbor_obstacles()
                 self._reset_gripper()

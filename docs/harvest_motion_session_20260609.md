@@ -352,3 +352,78 @@ total approach          = 160mm
 이 모드는 **tool/TCP calibration 수정이 아니라 실기 원인 분리용 임시 검증
 모드**다. E-stop 준비, 낮은 속도, 단일 target, whiteboard까지의 실제 간격 확인
 없이 자동 반복 실행하면 안 된다.
+
+## Claude Code 최적화 이후 상태 복원
+
+### SW 수확 성공 이후 변경
+
+SW 과실 수확을 육안으로 성공 확인한 뒤 실행 시간을 줄이기 위해 다음 최적화를
+진행했다.
+
+1. 모든 벽면 target에 extra advance 적용
+2. 모델 벽보다 줄기가 약 30mm 안쪽에 있다는 실기값 반영
+3. grasp target Z에 `+30mm` 보정 적용
+4. 파지 후 회전 detach 시도를 폐기하고 BASE `-Z 40mm` pull로 변경
+5. 18cm pre-approach 기반 2-step을 1-step cuRobo 직접 접근으로 단축
+
+1-step은 planning latency를 줄였지만 scan pose부터 grasp endpoint까지 cuRobo
+spline 곡선으로 이동하며 잎과 접촉했고, 최종 진입 방향 정확도가 떨어졌다.
+따라서 commit `c287916`에서 2-step을 복원하되 pre-approach를 기존 18cm가 아닌
+6cm로 단축했다.
+
+### 14:44 중단 원인
+
+최신 run:
+
+```text
+logs/runtime/2026-06-09/curobo_planner_node_20260609T144433-25918fa6.jsonl
+commit: c287916
+```
+
+확인된 이벤트:
+
+```text
+pick target prepared
+pre-approach MoveSplineJoint command
+pre-approach MoveSplineJoint success
+이후 FINAL_APPROACH_STRAIGHT 이벤트 없음
+```
+
+선택된 grasp offset이 `50mm`일 경우:
+
+```text
+PRE_APPROACH_OFFSET 60mm - grasp offset 50mm
+= final straight approach 10mm
+```
+
+그러나 공용 `execute_tool_z_line()`은 최소 `20mm`만 허용하고 있어 10mm 직선
+진입을 내부에서 거부했다. 따라서 cuRobo, Doosan controller 또는 직선 경로
+실행 실패가 아니라 **6cm pre-approach와 기존 MoveLine 최소거리 guard의 설정
+불일치**가 중단 원인이었다.
+
+또한 후보 목록에는 `70mm offset`도 남아 있었다. 6cm pre-approach에서 70mm
+offset을 선택하면 직선 진입 거리가 `-10mm`가 되어 2-step의 정확도 보장 목적이
+깨진다.
+
+### 수정
+
+- `FINAL_APPROACH_STRAIGHT` 호출에만 최소 거리 `5mm`를 허용한다.
+- retreat 및 다른 공용 MoveLine의 기본 최소거리 `20mm`는 유지한다.
+- `grasp_offset >= PRE_APPROACH_OFFSET` 후보는 6cm 2-step 탐색에서 제외한다.
+- runtime `node_start`에 `pre_approach_offset_m`을 다시 기록한다.
+
+예상 정상 순서:
+
+```text
+scan pose
+ -> cuRobo / MoveSplineJoint: 60mm pre-approach
+ -> Doosan MoveLine TOOL +Z: 10~45mm 정확한 직선 진입
+ -> extra advance: 최대 65mm
+ -> gripper close
+ -> BASE -Z pull
+ -> extra advance 역진
+ -> scan pose 복귀
+```
+
+현재 수정은 코드/빌드 검증 대상이며, **6cm pre-approach 복원 후 전체 파지
+시퀀스는 아직 실기 미검증**이다.

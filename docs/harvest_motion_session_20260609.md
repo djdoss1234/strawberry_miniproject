@@ -427,3 +427,39 @@ scan pose
 
 현재 수정은 코드/빌드 검증 대상이며, **6cm pre-approach 복원 후 전체 파지
 시퀀스는 아직 실기 미검증**이다.
+
+### 15:33 실기 결과: 6cm pre 정확도 저하
+
+`20260609T153253-a19a714d`에서 6cm pre-approach 중단 문제는 해소되어 전체
+시퀀스가 실행됐지만, 사용자는 그리퍼가 목표 정면이 아니라 옆으로 접근했다고
+관찰했다.
+
+```text
+pre-approach spline 성공
+FINAL_APPROACH_STRAIGHT = 20mm
+extra advance = 65mm
+```
+
+6cm pre에서는 선택 offset `40mm` 기준 최종 직선 구간이 `20mm`뿐이다.
+scan pose에서 pre-approach까지의 cuRobo spline이 만든 측방 접근 오차를 20mm
+직선 이동으로는 충분히 바로잡지 못했다. 또한 spline 도착 후 정지 시간도 제거된
+상태였다.
+
+따라서 속도 최적화보다 접근 정확도를 우선하여 다음을 복원했다.
+
+```text
+PRE_APPROACH_OFFSET: 60mm -> 180mm
+PRE_APPROACH_SETTLE_SEC: 없음 -> 0.5s
+```
+
+선택 offset `40mm` 기준 예상 시퀀스:
+
+```text
+18cm pre-approach spline
+ -> 0.5s settle
+ -> TOOL +Z 140mm straight approach
+ -> TOOL +Z 65mm extra advance
+```
+
+extra advance, Z bias, BASE -Z detach pull 등 이후 최적화는 유지한다. 이 복원
+설정은 코드/빌드 검증 대상이며 실기 재검증 전이다.

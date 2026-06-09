@@ -39,7 +39,8 @@ LEFTMOST_WALL_SAFETY_MARGIN_M = -0.030   # 실기 확인: 줄기가 모델 벽 3
 # available_extra = grasp_offset(50mm) - margin(-30mm) = 80mm → override 불필요
 LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 50.0    # 직접 접근이므로 고속 진입
 GRASP_Z_BIAS             = 0.030    # detection이 berry body 하단을 잡으므로 +30mm 위로 보정
-PRE_APPROACH_OFFSET      = 0.06     # 직선 접근 방향 확보를 위한 정지점 (6cm, 구 18cm)
+PRE_APPROACH_OFFSET      = 0.18     # 정확도 검증된 정지점: 충분한 TOOL +Z 직선 진입 구간 확보
+PRE_APPROACH_SETTLE_SEC  = 0.5      # spline 잔진동이 멈춘 뒤 직선 접근 시작
 FINAL_APPROACH_VEL_MM_S  = 50.0
 FINAL_APPROACH_ACC_MM_S2 = 60.0
 RETREAT_VEL_MM_S         = 80.0  # 직선 retreat — approach보다 고속으로 줄기 분리
@@ -1264,9 +1265,9 @@ class CuroboPlanner(Node):
         if raw_straw[0] < -0.30:
             straw[0] += LEFTMOST_GRASP_X_CORR_M
 
-        # 2. Grasp (cuRobo 2-step): 6cm pre-approach → 직선 진입
-        # pre-approach는 올바른 방향에서 직선 진입을 보장하기 위한 최소 정지점.
-        # 구 18cm → 6cm로 단축: 직선 방향 확보 + 계획 시간 유지.
+        # 2. Grasp (cuRobo 2-step): 18cm pre-approach → 직선 진입
+        # 6cm pre는 최종 직선 구간이 10~45mm로 짧아 spline의 측방 접근 오차를
+        # 바로잡지 못했다. 실기 정확도가 확인된 18cm 기준을 유지한다.
         n_offsets = len(grasp_retry_offsets)
         n_quats   = len(GRASP_QUAT_RETRY_VARIANTS)
         self.get_logger().info(
@@ -1354,6 +1355,10 @@ class CuroboPlanner(Node):
             self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
             return
+        self.get_logger().info(
+            f"PRE_APPROACH_REACHED — settling {PRE_APPROACH_SETTLE_SEC:.1f}s "
+            f"before {final_approach_distance*1000:.0f}mm straight approach")
+        time.sleep(PRE_APPROACH_SETTLE_SEC)
         if final_approach_distance > 0.001:
             if not self.execute_tool_z_line(
                     final_approach_distance,

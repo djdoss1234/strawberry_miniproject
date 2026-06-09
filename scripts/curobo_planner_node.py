@@ -255,6 +255,7 @@ class CuroboPlanner(Node):
             "leftmost_extra_advance_request_m", LEFTMOST_EXTRA_ADVANCE_REQUEST_M)
         self.declare_parameter(
             "leftmost_wall_safety_margin_m", LEFTMOST_WALL_SAFETY_MARGIN_M)
+        self.declare_parameter("leftmost_allow_wall_model_override", False)
         self._enable_marker_place = bool(
             self.get_parameter("enable_marker_place_sequence").value)
         self._execute_marker_place_release = bool(
@@ -269,6 +270,8 @@ class CuroboPlanner(Node):
             0.0, float(self.get_parameter("leftmost_extra_advance_request_m").value))
         self._leftmost_wall_safety_margin_m = max(
             0.0, float(self.get_parameter("leftmost_wall_safety_margin_m").value))
+        self._leftmost_allow_wall_model_override = bool(
+            self.get_parameter("leftmost_allow_wall_model_override").value)
 
         # ── ROS2 인터페이스 ────────────────────────────────────────────────────
         self.create_subscription(
@@ -325,6 +328,7 @@ class CuroboPlanner(Node):
             leftmost_deep_ik_timeout_sec=LEFTMOST_DEEP_IK_TIMEOUT_SEC,
             leftmost_extra_advance_request_m=self._leftmost_extra_advance_request_m,
             leftmost_wall_safety_margin_m=self._leftmost_wall_safety_margin_m,
+            leftmost_allow_wall_model_override=self._leftmost_allow_wall_model_override,
             pre_approach_offset_m=PRE_APPROACH_OFFSET,
             top_down_quat_wxyz=TOP_DOWN_QUAT_WXYZ,
             top_down_x_threshold_m=LEFTMOST_TOP_DOWN_X_THRESHOLD_M,
@@ -363,7 +367,8 @@ class CuroboPlanner(Node):
             f"{LEFTMOST_DEEP_IK_MAX_ATTEMPTS}attempts/"
             f"{LEFTMOST_DEEP_IK_TIMEOUT_SEC:.1f}s "
             f"extra_request={self._leftmost_extra_advance_request_m*1000:.0f}mm "
-            f"wall_margin={self._leftmost_wall_safety_margin_m*1000:.0f}mm")
+            f"wall_margin={self._leftmost_wall_safety_margin_m*1000:.0f}mm "
+            f"wall_override={self._leftmost_allow_wall_model_override}")
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
         self.get_logger().info(
@@ -1806,8 +1811,26 @@ class CuroboPlanner(Node):
         ):
             available_extra_m = max(
                 0.0, used_grasp_offset - self._leftmost_wall_safety_margin_m)
-            extra_advance_m = min(
-                self._leftmost_extra_advance_request_m, available_extra_m)
+            extra_advance_m = (
+                self._leftmost_extra_advance_request_m
+                if self._leftmost_allow_wall_model_override
+                else min(self._leftmost_extra_advance_request_m, available_extra_m)
+            )
+            if self._leftmost_allow_wall_model_override:
+                modeled_overtravel_m = max(0.0, extra_advance_m - available_extra_m)
+                self.get_logger().error(
+                    f"LEFTMOST_WALL_MODEL_OVERRIDE: executing "
+                    f"{extra_advance_m*1000:.0f}mm extra advance; "
+                    f"modeled wall overtravel={modeled_overtravel_m*1000:.0f}mm. "
+                    f"Physical clearance and E-stop must be verified.")
+                self.runtime_log.log(
+                    "leftmost_wall_model_override",
+                    requested_m=self._leftmost_extra_advance_request_m,
+                    executed_m=extra_advance_m,
+                    safe_available_m=available_extra_m,
+                    modeled_wall_overtravel_m=modeled_overtravel_m,
+                    reason="explicit_ros_parameter_override",
+                )
             if extra_advance_m < 0.020:
                 self.get_logger().warn(
                     f"LEFTMOST_EXTRA_ADVANCE_BLOCKED: request="
@@ -1913,9 +1936,22 @@ class CuroboPlanner(Node):
             self.get_logger().info(
                 f"4 fallback straight reverse retreat — retracing "
                 f"{total_approach_distance*1000:.1f}mm")
-            if not self.execute_tool_z_line(
-                    -total_approach_distance, motion_label="RETREAT_STRAIGHT_REVERSE",
-                    vel_mm_s=RETREAT_VEL_MM_S, acc_mm_s2=RETREAT_ACC_MM_S2):
+            reverse_ok = True
+            if extra_advance_m > 0.0:
+                reverse_ok = self.execute_tool_z_line(
+                    -extra_advance_m,
+                    motion_label="RETREAT_EXTRA_ADVANCE_REVERSE",
+                    vel_mm_s=RETREAT_VEL_MM_S,
+                    acc_mm_s2=RETREAT_ACC_MM_S2,
+                )
+            if reverse_ok:
+                reverse_ok = self.execute_tool_z_line(
+                    -final_approach_distance,
+                    motion_label="RETREAT_STRAIGHT_REVERSE",
+                    vel_mm_s=RETREAT_VEL_MM_S,
+                    acc_mm_s2=RETREAT_ACC_MM_S2,
+                )
+            if not reverse_ok:
                 self.get_logger().error(
                     "ABORT: straight reverse retreat failed — holding current pose; "
                     "overview motion blocked")

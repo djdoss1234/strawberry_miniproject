@@ -305,3 +305,50 @@ extra advance velocity   = 10mm/s
 줄기가 들어가는 파지 홈까지의 TOOL +Z 길이를 측정하여 `GRIPPER_LEN`과 비교해야
 한다. 길이 오차가 확인되면 추가 MoveLine 보정보다 robot/tool geometry를 먼저
 수정한다.
+
+## Extra 30mm 실기 확인 및 명시적 80mm 검증 모드
+
+### 11:45 실기 결과
+
+`20260609T114452-cc69112c`에서 안전 제한 추가 진입이 실제 실행되었다.
+
+```text
+FINAL_APPROACH_STRAIGHT = 130mm
+LEFTMOST_EXTRA_ADVANCE  = 30mm
+total approach          = 160mm
+```
+
+두 MoveLine 모두 controller success였지만 사용자는 실제 파지 홈까지 여전히
+약 `80~100mm` 부족하다고 관찰했다. 따라서 추가 이동 명령 누락은 원인이 아니다.
+
+또한 이전 맨 왼쪽 관찰 run과 현재 run은 동일 target이 아니었다.
+
+| run | raw target X | raw target Z | 기본 진입 |
+| --- | ---: | ---: | ---: |
+| `20260608T192005-cecd7d3e` | -401mm | 569mm | 130mm |
+| `20260609T114452-cc69112c` | -345mm | 534mm | 130mm + extra 30mm |
+
+현재 비전 target은 이전보다 약 `56mm` 오른쪽, `35mm` 아래에서 생성되었다.
+즉 최근 motion 코드가 기본 진입을 줄인 것이 아니라, target 선택/추정 위치가
+달라졌고 실제 TCP/파지 홈 모델 오차도 남아 있다.
+
+### 명시적 wall-model override
+
+실물 간격을 작업자가 직접 확인한 단일 target 검증에서만 요청한 `80mm` 전체
+추가 진입을 실행할 수 있도록 다음 ROS parameter를 추가했다.
+
+```bash
+-p leftmost_allow_wall_model_override:=true
+```
+
+- 기본값은 `false`이며 기존 30mm 안전 제한을 유지한다.
+- `true`이면 `leftmost_extra_advance_request_m` 요청값 전체를 저속 실행한다.
+- 현재 기본 요청값은 `80mm`이다.
+- 모델상 wall overtravel 양과 override 사용 사실을 ERROR 로그 및 runtime
+  JSONL에 기록한다.
+- 직선 역진 fallback은 `추가 진입 역진 -> 기본 진입 역진` 두 단계로 나누어,
+  총 진입 거리가 180mm MoveLine 단일 명령 한도를 넘어도 복귀할 수 있게 했다.
+
+이 모드는 **tool/TCP calibration 수정이 아니라 실기 원인 분리용 임시 검증
+모드**다. E-stop 준비, 낮은 속도, 단일 target, whiteboard까지의 실제 간격 확인
+없이 자동 반복 실행하면 안 된다.

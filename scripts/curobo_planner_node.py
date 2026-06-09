@@ -36,13 +36,12 @@ LEFTMOST_DEEP_IK_SEEDS = 128
 LEFTMOST_DEEP_IK_MAX_ATTEMPTS = 4
 LEFTMOST_DEEP_IK_TIMEOUT_SEC = 3.0
 LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: +X 보정 (ELBOW_UP 드리프트 보정)
-LEFTMOST_GRASP_Z_CORR_M = 0.030   # x < -300mm: +Z 보정 (다른 딸기 파지 높이에 맞춤)
 LEFTMOST_EXTRA_ADVANCE_REQUEST_M = 0.065  # 실기 요청값; wall safety gate가 실제 실행량을 제한
 LEFTMOST_WALL_SAFETY_MARGIN_M = -0.030   # 실기 확인: 줄기가 모델 벽 30mm 안쪽 → 음수로 80mm extra 허용
 # 근거: 2026-06-09 x=-345mm target, 210mm 진입 성공, 역진 정상
 # available_extra = grasp_offset(50mm) - margin(-30mm) = 80mm → override 불필요
 LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 30.0    # 미모델링 잎/줄기 구간 저속 진입
-GRASP_Z_BIAS         = 0.000    # fusion이 KP0→KP2 줄기 방향 보정을 적용하므로 중복 Z 보정 금지
+GRASP_Z_BIAS         = 0.030    # detection이 berry body 하단을 잡으므로 +30mm 위로 보정 (peduncle 위치)
 PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근
 PRE_APPROACH_SETTLE_SEC = 0.5  # 자세/파지 위치 확정 후 완전 정지
 FINAL_APPROACH_VEL_MM_S = 50.0 # pre-approach → grasp TOOL +Z 저속 직선 진입
@@ -1272,7 +1271,6 @@ class CuroboPlanner(Node):
 
         if raw_straw[0] < -0.30:
             straw[0] += LEFTMOST_GRASP_X_CORR_M
-            straw[2] += LEFTMOST_GRASP_Z_CORR_M
 
         # 2. Grasp (cuRobo 2-step): pre-approach → grasp
         n_offsets = len(grasp_retry_offsets)

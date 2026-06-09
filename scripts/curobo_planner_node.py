@@ -38,7 +38,9 @@ LEFTMOST_DEEP_IK_TIMEOUT_SEC = 3.0
 LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: detection 흔들림을 고려해 +X 보정을 5mm로 제한
 LEFTMOST_TOP_DOWN_X_THRESHOLD_M = -0.300
 LEFTMOST_EXTRA_ADVANCE_REQUEST_M = 0.080  # 실기 요청값; wall safety gate가 실제 실행량을 제한
-LEFTMOST_WALL_SAFETY_MARGIN_M = 0.020     # 모델상 stem/wall 앞 최소 잔여 거리
+LEFTMOST_WALL_SAFETY_MARGIN_M = -0.030   # 실기 확인: 줄기가 모델 벽 30mm 안쪽 → 음수로 80mm extra 허용
+# 근거: 2026-06-09 x=-345mm target, 210mm 진입 성공, 역진 정상
+# available_extra = grasp_offset(50mm) - margin(-30mm) = 80mm → override 불필요
 LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 10.0    # 미모델링 잎/줄기 구간 저속 진입
 GRASP_Z_BIAS         = 0.000    # fusion이 KP0→KP2 줄기 방향 보정을 적용하므로 중복 Z 보정 금지
 PRE_APPROACH_OFFSET  = 0.18    # 줄기 앞 18cm에 먼저 정지 후 직선 접근

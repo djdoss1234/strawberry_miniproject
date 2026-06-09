@@ -31,7 +31,10 @@ from runtime_jsonl_logger import RuntimeJsonlLogger
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
 GRASP_RETRY_OFFSETS  = [0.015, 0.030, 0.040, 0.050, 0.070]
-LEFTMOST_GRASP_RETRY_OFFSETS = [0.040, 0.045, 0.050, 0.070]
+LEFTMOST_GRASP_RETRY_OFFSETS = [0.030, 0.035, 0.040, 0.045, 0.050, 0.070]
+LEFTMOST_DEEP_IK_SEEDS = 128
+LEFTMOST_DEEP_IK_MAX_ATTEMPTS = 4
+LEFTMOST_DEEP_IK_TIMEOUT_SEC = 3.0
 LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: detection 흔들림을 고려해 +X 보정을 5mm로 제한
 LEFTMOST_TOP_DOWN_X_THRESHOLD_M = -0.300
 GRASP_Z_BIAS         = 0.000    # fusion이 KP0→KP2 줄기 방향 보정을 적용하므로 중복 Z 보정 금지
@@ -306,6 +309,9 @@ class CuroboPlanner(Node):
             grasp_retry_offsets_m=GRASP_RETRY_OFFSETS,
             leftmost_grasp_retry_offsets_m=LEFTMOST_GRASP_RETRY_OFFSETS,
             leftmost_grasp_x_correction_m=LEFTMOST_GRASP_X_CORR_M,
+            leftmost_deep_ik_seeds=LEFTMOST_DEEP_IK_SEEDS,
+            leftmost_deep_ik_max_attempts=LEFTMOST_DEEP_IK_MAX_ATTEMPTS,
+            leftmost_deep_ik_timeout_sec=LEFTMOST_DEEP_IK_TIMEOUT_SEC,
             pre_approach_offset_m=PRE_APPROACH_OFFSET,
             top_down_quat_wxyz=TOP_DOWN_QUAT_WXYZ,
             top_down_x_threshold_m=LEFTMOST_TOP_DOWN_X_THRESHOLD_M,
@@ -339,7 +345,10 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"  LEFTMOST horizontal fallback x_corr="
             f"{LEFTMOST_GRASP_X_CORR_M*1000:+.0f}mm "
-            f"offsets_mm={[round(v*1000) for v in LEFTMOST_GRASP_RETRY_OFFSETS]}")
+            f"offsets_mm={[round(v*1000) for v in LEFTMOST_GRASP_RETRY_OFFSETS]} "
+            f"deep_ik={LEFTMOST_DEEP_IK_SEEDS}seeds/"
+            f"{LEFTMOST_DEEP_IK_MAX_ATTEMPTS}attempts/"
+            f"{LEFTMOST_DEEP_IK_TIMEOUT_SEC:.1f}s")
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
         self.get_logger().info(
@@ -515,7 +524,7 @@ class CuroboPlanner(Node):
         if straw[0] > 0.25:
             return [-0.03, 0.0]
         if straw[0] < -0.30:
-            # 40mm가 IK 실패할 때 기존 50mm로 바로 물러나지 않고 45mm를 검사한다.
+            # 더 깊은 30/35mm부터 검사하되 cuRobo가 검증한 endpoint만 실행한다.
             return LEFTMOST_GRASP_RETRY_OFFSETS
         return GRASP_RETRY_OFFSETS
 
@@ -633,7 +642,8 @@ class CuroboPlanner(Node):
                 return False
         return True
 
-    def plan(self, start_joints, target_pos, target_quat_wxyz, num_ik_seeds=32):
+    def plan(self, start_joints, target_pos, target_quat_wxyz, num_ik_seeds=32,
+             max_attempts=None, timeout_sec=None):
         t0 = time.time()
         start_joints = self._clamp_joints(start_joints)
         start_state = CuroboJointState.from_position(
@@ -648,8 +658,16 @@ class CuroboPlanner(Node):
             start_state, target_pose,
             MotionGenPlanConfig(
                 num_ik_seeds=num_ik_seeds,
-                max_attempts=CARTESIAN_PLAN_MAX_ATTEMPTS,
-                timeout=CARTESIAN_PLAN_TIMEOUT_SEC,
+                max_attempts=(
+                    max_attempts
+                    if max_attempts is not None
+                    else CARTESIAN_PLAN_MAX_ATTEMPTS
+                ),
+                timeout=(
+                    timeout_sec
+                    if timeout_sec is not None
+                    else CARTESIAN_PLAN_TIMEOUT_SEC
+                ),
                 enable_graph_attempt=None,
             ),
         )
@@ -1669,8 +1687,30 @@ class CuroboPlanner(Node):
                 grasp_attempt += 1
                 # final grasp: pre-approach에서 grasp_offset까지 직선 접근
                 ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
-                r_grasp = self.plan(pre_joints, ee_g_try.tolist(), q_retry,
-                                    num_ik_seeds=32)
+                is_leftmost_deep_candidate = (
+                    raw_straw[0] < LEFTMOST_TOP_DOWN_X_THRESHOLD_M
+                    and grasp_offset <= 0.045
+                )
+                r_grasp = self.plan(
+                    pre_joints,
+                    ee_g_try.tolist(),
+                    q_retry,
+                    num_ik_seeds=(
+                        LEFTMOST_DEEP_IK_SEEDS
+                        if is_leftmost_deep_candidate
+                        else 32
+                    ),
+                    max_attempts=(
+                        LEFTMOST_DEEP_IK_MAX_ATTEMPTS
+                        if is_leftmost_deep_candidate
+                        else None
+                    ),
+                    timeout_sec=(
+                        LEFTMOST_DEEP_IK_TIMEOUT_SEC
+                        if is_leftmost_deep_candidate
+                        else None
+                    ),
+                )
                 if r_grasp is None:
                     continue
                 ret_pre   = r_pre_for_variant
@@ -1683,6 +1723,24 @@ class CuroboPlanner(Node):
                 break
             if ret_pre is not None:
                 break
+
+        if (
+            ret_pre is not None
+            and raw_straw[0] < LEFTMOST_TOP_DOWN_X_THRESHOLD_M
+            and used_grasp_offset >= 0.050
+        ):
+            self.get_logger().warn(
+                f"LEFTMOST_DEPTH_LIMITED: deeper 30/35/40/45mm endpoints rejected; "
+                f"using {used_grasp_offset*1000:.0f}mm stand-off")
+            self.runtime_log.log(
+                "leftmost_depth_limited",
+                selected_grasp_offset_m=used_grasp_offset,
+                attempted_offsets_m=[
+                    value for value in LEFTMOST_GRASP_RETRY_OFFSETS
+                    if value < used_grasp_offset
+                ],
+                reason="deeper_endpoints_rejected",
+            )
 
         if ret_pre is None:
             self.get_logger().error(

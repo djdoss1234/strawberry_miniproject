@@ -219,3 +219,41 @@ LEFTMOST_GRASP_RETRY_OFFSETS: [40, 50, 70]mm -> [40, 45, 50, 70]mm
 - 다른 과실의 좌표 보정 및 깊이 후보는 변경하지 않았다.
 
 현재 단계는 **코드/빌드 검증 대상이며, 새 `+5mm / 45mm` 설정은 실기 미검증**이다.
+
+## Leftmost Deeper Endpoint Search
+
+### 11:22 실기 결과
+
+`20260609T112156-40cf85e9`에서 새 `45mm` 후보가 실제로 검사되었지만,
+`40mm`와 `45mm` endpoint가 모두 `MotionGenStatus.IK_FAIL`이었다. 따라서
+planner는 다시 `50mm` stand-off를 선택했고 실제 직선 진입 거리도 기존과 같은
+`130mm`였다.
+
+즉, 이전 조정은 후보를 추가했지만 실제 진입 깊이를 바꾸지 못했다.
+
+```text
+40mm endpoint -> IK_FAIL
+45mm endpoint -> IK_FAIL
+50mm endpoint -> Plan OK
+GRASP_POSE_REACHED offset=+0.050m
+```
+
+### 조정
+
+맨 왼쪽 수평 fallback에만 더 깊은 endpoint 탐색 범위를 확장했다.
+
+```text
+LEFTMOST_GRASP_RETRY_OFFSETS = [30, 35, 40, 45, 50, 70]mm
+deep endpoint IK seeds = 128
+deep endpoint max attempts = 4
+deep endpoint timeout = 3.0s
+```
+
+- `30mm`가 선택되면 기존 `50mm`보다 `20mm` 더 깊게 진입한다.
+- `35mm`는 `15mm`, `40mm`는 `10mm`, `45mm`는 `5mm` 더 깊다.
+- 이 강화 탐색은 맨 왼쪽 target의 `30~45mm` endpoint에만 적용한다.
+- 모든 깊은 endpoint가 거부되면 `LEFTMOST_DEPTH_LIMITED`를 기록하고 검증된
+  `50mm` 이상 경로를 사용한다.
+- IK 검증에 실패한 위치로 MoveLine을 강제 연장하지 않는다.
+
+현재 단계는 **코드 검증 대상, 강화된 깊이 탐색 실기 미검증**이다.

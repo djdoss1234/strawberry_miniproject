@@ -389,14 +389,34 @@ curobo_planner_node_20260609T160052-da5edd5a.jsonl
 
 **삽입 위치:** 위 표 아래
 
-**필요 자료:** 새로 캡처 또는 그래프 생성 필요
+**노션에 넣을 파일:**
 
-**권장 자료:**
+```text
+docs/runs/RUN-20260609-001_sw_runtime_summary.png
+```
 
-- runtime JSONL의 `curobo_plan_success`, `curobo_plan_fail`,
-  `pick_sequence_complete` 이벤트 캡처
-- planning latency 막대그래프
-- 전체 `36.4초` 시퀀스 타임라인
+이 이미지는 JSONL 원문을 캡처한 것이 아니라 아래 원본 로그를 읽어 생성한
+요약 그래프다.
+
+```text
+원본:
+logs/runtime/2026-06-09/
+curobo_planner_node_20260609T160052-da5edd5a.jsonl
+
+생성 명령:
+python3 scripts/generate_runtime_summary_plot.py \
+  logs/runtime/2026-06-09/curobo_planner_node_20260609T160052-da5edd5a.jsonl \
+  --output docs/runs/RUN-20260609-001_sw_runtime_summary.png
+```
+
+그래프 구성:
+
+- 상단: 각 cuRobo 계획 시도의 성공/실패와 planning latency
+- 하단: pick 시작부터 grasp, detach, scan pose 복귀까지 `36.4초` 타임라인
+
+JSONL 원문의 긴 텍스트 화면은 노션 본문에 넣지 않는다. 필요하면 증거용으로
+`verify_grasp`, `verify_detach`, `pick_sequence_complete` 세 이벤트만 접어서
+첨부한다.
 
 **권장 캡션:**
 

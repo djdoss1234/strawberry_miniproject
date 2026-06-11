@@ -92,6 +92,21 @@ run `curobo_planner_node_20260611T191813-479a10b2.jsonl`에서 pick과 tray-view
 
 legacy profile만 기존 `position_tcp_mm`를 사용한다.
 
+### 2-4. Corrected 위치에서도 IKFAIL: tray-view FK orientation 사용
+
+run `curobo_planner_node_20260611T193642-32d972cf.jsonl`에서는 corrected ABOVE
+`(559.2,-329.6,635.6)mm`가 적용됐지만 tray JSON orientation에서 다시 IKFAIL이
+발생했다.
+
+따라서 place orientation source를 변경했다.
+
+- tray JSON orientation: 좌표 계산 및 비교 기록용
+- 실제 cuRobo place orientation: 이미 도달한 tray-view joints의 cuRobo FK
+- ABOVE, RELEASE, ABOVE retreat 동안 같은 orientation 유지
+- JSON과 FK orientation 차이는 runtime JSONL에 각도로 기록
+
+다음 테스트도 `execute_marker_place_release:=false`로 ABOVE preview만 수행한다.
+
 ---
 
 ## 3. 예상 문제 및 대처

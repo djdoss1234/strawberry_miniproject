@@ -192,6 +192,39 @@ curobo_planner_node_20260611T191813-479a10b2.jsonl
 다음 실행은 반드시 `execute_marker_place_release:=false`로 corrected ABOVE 위치와
 clearance부터 확인한다.
 
+### 5-5. Corrected ABOVE 위치에서도 IK_FAIL: place orientation source 수정
+
+run:
+
+```text
+logs/runtime/2026-06-11/
+curobo_planner_node_20260611T193642-32d972cf.jsonl
+```
+
+관찰:
+
+- measured grasp center 기준 목표
+  `(559.2,-329.6,635.6)mm`가 정상 적용됨
+- 같은 tray JSON의 `task_orientation_deg`를 cuRobo quaternion으로 변환한
+  orientation에서 여전히 `IK_FAIL`
+
+판단:
+
+- 위치 중복 보정 문제는 해결되었고, 남은 문제는 Doosan controller TCP 자세와
+  cuRobo `grasp_tcp_link` 자세 convention/model 차이다.
+- tray-view 관절 자세는 실제 로봇과 cuRobo 모두 이미 도달 가능한 검증 자세다.
+- place에서는 tray-view의 cuRobo FK orientation을 유지하고 slot 위치만 변경하는
+  것이 가장 보수적이다.
+
+수정:
+
+- tray-view 도달 후 cuRobo FK로 `grasp_tcp_link` quaternion을 계산한다.
+- ABOVE, RELEASE, ABOVE retreat 모두 이 orientation을 유지한다.
+- JSON orientation과의 각도 차이를
+  `marker_place_orientation_selected.angular_delta_deg`로 기록한다.
+
+다음 실행도 release를 끈 preview로 corrected ABOVE 계획 성공 여부부터 확인한다.
+
 ### 5-2. 슬롯 레이아웃 확인
 
 ```

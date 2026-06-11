@@ -1138,6 +1138,16 @@ class CuroboPlanner(Node):
         xyzw = r.as_quat()
         return [float(xyzw[3]), float(xyzw[0]), float(xyzw[1]), float(xyzw[2])]
 
+    def _curobo_fk_ee_pose(self, joints_rad):
+        """cuRobo robot model 기준 현재 ee_link pose를 반환한다."""
+        q = torch.tensor(
+            [joints_rad], device="cuda:0", dtype=torch.float32)
+        state = self.motion_gen.kinematics.get_state(q)
+        return (
+            state.ee_position[0].detach().cpu().numpy().tolist(),
+            state.ee_quaternion[0].detach().cpu().numpy().tolist(),
+        )
+
     def _nearest_equivalent_joints(self, base_joints_deg):
         """J4/J6를 현재 위치에서 가장 가까운 360° equivalent로 조정."""
         if self.current_joints is None:
@@ -1313,9 +1323,28 @@ class CuroboPlanner(Node):
                 "MARKER_PLACE_BLOCKED: tray-view plan failed; holding fruit")
             return "failed", overview_joints
 
-        # ABOVE: cuRobo Cartesian plan (TRAY_VIEW_JOINTS ≈ ABOVE, trivial or minor move)
+        # Tray localization은 Doosan controller TCP orientation을 저장하지만 cuRobo
+        # measured grasp_tcp_link와 convention/model 차이로 그대로는 IK_FAIL이 날 수
+        # 있다. 이미 도달한 tray-view의 cuRobo FK orientation을 place 전체에 유지한다.
+        tray_view_fk_pos, place_quat = self._curobo_fk_ee_pose(tray_view_joints)
+        json_place_quat = self._doosan_zyz_to_wxyz(*target["above"][3:])
+        quat_dot = min(1.0, abs(float(np.dot(place_quat, json_place_quat))))
+        quat_delta_deg = float(np.rad2deg(2.0 * np.arccos(quat_dot)))
+        self.get_logger().info(
+            f"MARKER_PLACE_ORIENTATION tray-view FK selected; "
+            f"json_delta={quat_delta_deg:.1f}deg")
+        self.runtime_log.log(
+            "marker_place_orientation_selected",
+            source="tray_view_curobo_fk",
+            tray_view_fk_pos_m=tray_view_fk_pos,
+            selected_quat_wxyz=place_quat,
+            json_quat_wxyz=json_place_quat,
+            angular_delta_deg=quat_delta_deg,
+        )
+
+        # ABOVE: 검증된 tray-view orientation을 유지하고 slot 위 위치만 이동한다.
         above_pos_m = [v / 1000.0 for v in target["above"][:3]]
-        above_quat = self._doosan_zyz_to_wxyz(*target["above"][3:])
+        above_quat = place_quat
         self.get_logger().info(
             f"MARKER_PLACE_ABOVE cuRobo "
             f"xyz={[round(v, 1) for v in target['above'][:3]]}mm "
@@ -1340,7 +1369,7 @@ class CuroboPlanner(Node):
 
         # RELEASE: cuRobo Cartesian plan — avoids kinematic flip caused by BASE ABS
         release_pos_m = [v / 1000.0 for v in target["release"][:3]]
-        release_quat = self._doosan_zyz_to_wxyz(*target["release"][3:])
+        release_quat = place_quat
         self.get_logger().info(
             f"MARKER_PLACE_RELEASE_DESCEND cuRobo "
             f"xyz={[round(v, 1) for v in target['release'][:3]]}mm "

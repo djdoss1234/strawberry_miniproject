@@ -135,6 +135,22 @@ allow_unverified_grasp_place:=true
 
 **아직 실기 검증 안 됨** — 빌드만 완료, 다음 세션에서 테스트 필요
 
+### 5-3. Codex 재검토 후 place 안전 보강
+
+Claude Code 구현을 재검토하면서 실기 전 위험 분기 두 개를 수정했다.
+
+1. ABOVE cuRobo 계획 실패 시 기존 코드는 현재 tray-view 자세를 ABOVE로
+   간주하고 release 단계로 계속 진행했다.
+   - 수정: ABOVE 계획 실패 시 과실을 든 상태로 즉시 중단하는 fail-closed 적용
+2. release 후 기존 코드는 tray-view 관절 자세로 바로 복귀했다.
+   - 위험: 계란판 위 clearance를 확보하기 전에 joint-space 경로가 tray body를
+     가로지를 수 있음
+   - 수정: `release -> cuRobo ABOVE -> tray-view joint-space` 순서로 변경
+   - tray-view 복귀의 swing check 생략도 제거
+
+첫 실기 검증은 `execute_marker_place_release:=false`로 ABOVE preview만 확인한 뒤,
+clearance가 확인되면 release를 활성화한다.
+
 ### 5-2. 슬롯 레이아웃 확인
 
 ```

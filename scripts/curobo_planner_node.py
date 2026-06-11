@@ -1293,14 +1293,13 @@ class CuroboPlanner(Node):
             f"xyz={[round(v, 1) for v in target['above'][:3]]}mm "
             f"abc={[round(v, 1) for v in target['above'][3:]]}deg")
         above_plan = self.plan(tray_view_joints, above_pos_m, above_quat)
-        if above_plan is not None:
-            ok_above = self.execute_spline(*above_plan)
-            above_joints = list(above_plan[0][-1].tolist() if ok_above else tray_view_joints)
-        else:
-            self.get_logger().warn(
-                "MARKER_PLACE_ABOVE: cuRobo plan failed, treating tray-view joints as above")
-            ok_above = True
-            above_joints = list(tray_view_joints)
+        if above_plan is None:
+            self.get_logger().error(
+                "MARKER_PLACE_BLOCKED: above cuRobo plan failed; holding fruit")
+            return "failed", tray_view_joints
+        ok_above = self.execute_spline(*above_plan)
+        above_joints = list(
+            above_plan[0][-1].tolist() if ok_above else tray_view_joints)
         if not ok_above:
             self.get_logger().error("MARKER_PLACE_BLOCKED: above spline exec failed; holding fruit")
             return "failed", tray_view_joints
@@ -1337,15 +1336,25 @@ class CuroboPlanner(Node):
         self.call_trigger(self.cli_gripper_open)
         time.sleep(2.0)
 
-        # RETREAT: joint-space back to tray-view (known safe configuration)
+        # RETREAT: release pose에서 먼저 above로 상승한 뒤 tray-view로 복귀한다.
+        # release에서 tray-view 관절 자세로 바로 이동하면 tray body를 가로지를 수 있다.
+        above_retreat_plan = self.plan(release_joints, above_pos_m, above_quat)
+        if above_retreat_plan is None or not self.execute_spline(*above_retreat_plan):
+            self.get_logger().error(
+                "MARKER_PLACE_RELEASED_BUT_ABOVE_RETREAT_FAILED: holding position")
+            return "failed_after_release", list(self.current_joints or release_joints)
+        above_retreat_joints = list(above_retreat_plan[0][-1].tolist())
+
+        # Known tray-view configuration으로 collision-aware joint-space 복귀.
         tray_view_deg_retreat = self._nearest_equivalent_joints(TRAY_VIEW_JOINTS_DEG)
         ok_retreat, _ = self.plan_to_fixed_joints_pose(
-            release_joints, tray_view_deg_retreat,
-            "MARKER_PLACE_ABOVE_RETREAT", skip_swing_check=True)
+            above_retreat_joints, tray_view_deg_retreat,
+            "MARKER_PLACE_TRAY_VIEW_RETURN")
         if not ok_retreat:
             self.get_logger().error(
                 "MARKER_PLACE_RELEASED_BUT_RETREAT_FAILED: holding position")
-            return "failed_after_release", list(self.current_joints or release_joints)
+            return "failed_after_release", list(
+                self.current_joints or above_retreat_joints)
 
         self._marker_place_slot_idx += 1
         self.runtime_log.log(

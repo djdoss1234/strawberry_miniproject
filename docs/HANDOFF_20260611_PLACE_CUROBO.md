@@ -6,7 +6,7 @@ Date: 2026-06-11 KST (저녁 세션 종료)
 
 ## 1. 즉시 해야 할 것
 
-**방금 커밋된 place 코드를 실기 테스트해야 한다.**
+**방금 수정된 place 코드를 먼저 preview 실기 테스트해야 한다.**
 
 ```bash
 # 터미널 1: tray 재스캔 (max_age=3600s, 1시간 초과 시 필수)
@@ -17,7 +17,7 @@ cd ~/Downloads/share_tray && python3 run_tray_localization.py
 source ~/doosan_ws/install/setup.bash
 ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
   -p enable_marker_place_sequence:=true \
-  -p execute_marker_place_release:=true \
+  -p execute_marker_place_release:=false \
   -p measured_tcp_plan_only:=false \
   -p allow_unverified_grasp_place:=true
 
@@ -31,6 +31,9 @@ ros2 launch strawberry_motion workspace_scan.launch.py \
 ```
 
 ---
+
+`execute_marker_place_release:=false`로 ABOVE 위치와 clearance를 먼저 확인한 뒤,
+문제가 없을 때만 `true`로 바꾸어 release를 검증한다.
 
 ## 2. 이번 세션에서 해결한 것
 
@@ -61,9 +64,14 @@ z=627mm BASE ABS로 하강 시 kinematic 충돌 → 다른 IK solution 선택
 3. `_execute_marker_place_after_retreat` 내 BASE ABS 이동 3개 → cuRobo 대체:
    - `execute_base_line(above)` → `self.plan(tray_view_joints, above_pos_m, above_quat)` + `execute_spline`
    - `execute_base_line(release)` → `self.plan(above_joints, release_pos_m, release_quat)` + `execute_spline`
-   - `execute_base_line(above_retreat)` → `plan_to_fixed_joints_pose(..., TRAY_VIEW_JOINTS_DEG)`
+   - release 후 `self.plan(release_joints, above_pos_m, above_quat)`로 ABOVE 복귀
+   - ABOVE에서 `plan_to_fixed_joints_pose(..., TRAY_VIEW_JOINTS_DEG)`로 복귀
+4. 추가 안전 보강:
+   - ABOVE cuRobo plan 실패 시 tray-view를 ABOVE로 간주하지 않고 fail-closed
+   - release 위치에서 tray-view로 바로 관절 이동하지 않고 반드시 ABOVE를 경유
+   - tray-view 복귀 시 swing check를 생략하지 않음
 
-**빌드 완료, 실기 미검증** — 다음 세션 첫 번째 작업
+**실기 미검증** — 다음 세션 첫 번째 작업
 
 ---
 
@@ -134,14 +142,15 @@ row4: [ 12 ] [ 13 ] [ 14 ]
 - 실기 실행 전 E-stop 준비
 - `allow_unverified_grasp_place:=true` 상태이므로 빈 그리퍼로 place 시도 가능 → 사람 관찰 필수
 - tray scan 후 반드시 수동으로 홈 복귀 확인 (`run_tray_localization.py` 는 자동 홈 복귀 안 함)
-- Place cuRobo plan이 swing check에서 걸리면 `skip_swing_check=True` 가 이미 설정됨
+- Place Cartesian plan과 release 후 tray-view 복귀는 swing check를 통과해야 실행됨
 
 ---
 
 ## 7. 미완료 작업 (우선순위 순)
 
-1. **Place cuRobo 실기 검증** ← 지금 당장
-2. VERIFY_GRASP 서비스 연결 (gripper read_state)
-3. KPI 수집 (`label_harvest_attempt.py`) — pick+place 안정 후
-4. 비전 타겟 일관성 (x=-345 vs -401mm 편차)
-5. NW/NE 셀 파라미터 조정
+1. **Place cuRobo preview 실기 검증** (`execute_marker_place_release:=false`)
+2. ABOVE 위치와 clearance 확인 후 release 활성화 검증
+3. VERIFY_GRASP 서비스 연결 (gripper read_state)
+4. KPI 수집 (`label_harvest_attempt.py`) — pick+place 안정 후
+5. 비전 타겟 일관성 (x=-345 vs -401mm 편차)
+6. NW/NE 셀 파라미터 조정

@@ -225,6 +225,40 @@ curobo_planner_node_20260611T193642-32d972cf.jsonl
 
 다음 실행도 release를 끈 preview로 corrected ABOVE 계획 성공 여부부터 확인한다.
 
+### 5-6. Tray-view FK orientation도 IKFAIL: top-down orientation sampling
+
+run:
+
+```text
+logs/runtime/2026-06-11/
+curobo_planner_node_20260611T194304-59f31711.jsonl
+```
+
+관찰:
+
+- tray-view cuRobo FK position:
+  `(609.5,-16.1,118.3)mm`
+- ABOVE 목표:
+  `(555.0,-316.0,636.9)mm`
+- tray-view FK orientation 유지 시에도 `IK_FAIL`
+
+결론:
+
+- JSON orientation 변환만의 문제가 아니다.
+- tray-view orientation을 고정한 채 약 52cm 상승하고 약 30cm 측면 이동하는
+  pose 자체가 도달 불가하다.
+
+수정:
+
+- place의 실제 작업 제약을 `TOOL +Z가 계란판 아래 방향`으로 정의했다.
+- tray-view FK 후보와 top-down yaw `0, ±45, ±90, 180deg` 후보를 순서대로
+  계획하여 도달 가능한 첫 경로를 선택한다.
+- 후보별로 파츠 끝 접촉점에서 실제 파지 중심 10mm 보정 방향을 다시 계산한다.
+- 선택한 orientation/ABOVE/release 좌표를 runtime JSONL에 기록한다.
+
+다음 실행은 release 없이 ABOVE preview만 수행한다. 모든 후보가 실패하면 실제
+딸기 수확 반복 대신 독립 place benchmark/티칭 pose가 필요하다.
+
 ### 5-2. 슬롯 레이아웃 확인
 
 ```

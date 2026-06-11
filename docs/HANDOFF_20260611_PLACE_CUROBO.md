@@ -107,6 +107,21 @@ run `curobo_planner_node_20260611T193642-32d972cf.jsonl`에서는 corrected ABOV
 
 다음 테스트도 `execute_marker_place_release:=false`로 ABOVE preview만 수행한다.
 
+### 2-5. Tray-view FK도 IKFAIL: top-down orientation 후보 추가
+
+run `curobo_planner_node_20260611T194304-59f31711.jsonl`에서 tray-view FK
+orientation도 corrected ABOVE에서 IKFAIL이었다.
+
+현재 수정:
+
+- tray-view FK orientation 1개
+- TOOL +Z가 아래를 향하는 top-down yaw `0, ±45, ±90, 180deg`
+- 총 7개 후보 중 cuRobo가 도달 가능한 첫 경로 선택
+- 각 후보 orientation에 맞춰 contact point에서 grasp center 10mm 보정을 재계산
+- 선택 결과를 runtime JSONL에 기록
+
+다음 테스트는 반드시 release를 끈 상태로 ABOVE preview를 확인한다.
+
 ---
 
 ## 3. 예상 문제 및 대처

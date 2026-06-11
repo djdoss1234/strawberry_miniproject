@@ -1148,6 +1148,27 @@ class CuroboPlanner(Node):
             state.ee_quaternion[0].detach().cpu().numpy().tolist(),
         )
 
+    def _marker_place_orientation_candidates(self, tray_view_joints):
+        """Tray place용 orientation 후보.
+
+        tray-view FK와 tray JSON 자세는 현재 slot ABOVE에서 모두 IK_FAIL이었다.
+        계란판 place의 작업 제약은 TOOL +Z가 아래를 향하는 것이므로, 하향 자세를
+        yaw별로 샘플링하고 cuRobo가 도달 가능한 후보를 선택한다.
+        """
+        _, tray_view_quat = self._curobo_fk_ee_pose(tray_view_joints)
+        candidates = [("tray_view_fk", tray_view_quat)]
+        for yaw_deg in (0.0, 45.0, -45.0, 90.0, -90.0, 180.0):
+            rotation = (
+                SciR.from_euler("Z", yaw_deg, degrees=True)
+                * SciR.from_euler("X", 180.0, degrees=True)
+            )
+            xyzw = rotation.as_quat()
+            candidates.append((
+                f"top_down_yaw_{yaw_deg:+.0f}",
+                [float(xyzw[3]), float(xyzw[0]), float(xyzw[1]), float(xyzw[2])],
+            ))
+        return candidates
+
     def _nearest_equivalent_joints(self, base_joints_deg):
         """J4/J6를 현재 위치에서 가장 가까운 360° equivalent로 조정."""
         if self.current_joints is None:
@@ -1294,6 +1315,7 @@ class CuroboPlanner(Node):
             "release": release,
             "above": above,
             "target_source": target_source,
+            "contact_mm": cell.get("position_contact_mm"),
         }
 
     def _execute_marker_place_after_retreat(self, retreat_joints):
@@ -1324,36 +1346,78 @@ class CuroboPlanner(Node):
             return "failed", overview_joints
 
         # Tray localization은 Doosan controller TCP orientation을 저장하지만 cuRobo
-        # measured grasp_tcp_link와 convention/model 차이로 그대로는 IK_FAIL이 날 수
-        # 있다. 이미 도달한 tray-view의 cuRobo FK orientation을 place 전체에 유지한다.
-        tray_view_fk_pos, place_quat = self._curobo_fk_ee_pose(tray_view_joints)
+        # measured grasp_tcp_link와 convention/model 차이로 그대로는 IK_FAIL이 난다.
+        # 도달 가능한 place orientation을 preview ABOVE에서 먼저 선택한다.
+        tray_view_fk_pos, tray_view_quat = self._curobo_fk_ee_pose(tray_view_joints)
         json_place_quat = self._doosan_zyz_to_wxyz(*target["above"][3:])
-        quat_dot = min(1.0, abs(float(np.dot(place_quat, json_place_quat))))
+        quat_dot = min(1.0, abs(float(np.dot(tray_view_quat, json_place_quat))))
         quat_delta_deg = float(np.rad2deg(2.0 * np.arccos(quat_dot)))
         self.get_logger().info(
-            f"MARKER_PLACE_ORIENTATION tray-view FK selected; "
-            f"json_delta={quat_delta_deg:.1f}deg")
-        self.runtime_log.log(
-            "marker_place_orientation_selected",
-            source="tray_view_curobo_fk",
-            tray_view_fk_pos_m=tray_view_fk_pos,
-            selected_quat_wxyz=place_quat,
-            json_quat_wxyz=json_place_quat,
-            angular_delta_deg=quat_delta_deg,
-        )
+            f"MARKER_PLACE_ORIENTATION_SEARCH tray-view/json delta="
+            f"{quat_delta_deg:.1f}deg")
 
-        # ABOVE: 검증된 tray-view orientation을 유지하고 slot 위 위치만 이동한다.
-        above_pos_m = [v / 1000.0 for v in target["above"][:3]]
-        above_quat = place_quat
+        # ABOVE: 하향 place 자세 후보 중 도달 가능한 첫 경로를 선택한다. Measured
+        # TCP는 orientation마다 파츠 끝->파지 중심 10mm 방향이 달라지므로 후보별로
+        # release/above 위치를 contact point에서 다시 계산한다.
+        default_above_pos_m = [v / 1000.0 for v in target["above"][:3]]
         self.get_logger().info(
             f"MARKER_PLACE_ABOVE cuRobo "
             f"xyz={[round(v, 1) for v in target['above'][:3]]}mm "
             f"abc={[round(v, 1) for v in target['above'][3:]]}deg")
-        above_plan = self.plan(tray_view_joints, above_pos_m, above_quat)
+        above_plan = None
+        selected_orientation_name = None
+        above_quat = None
+        selected_release_pos_m = None
+        selected_above_pos_m = None
+        for orientation_name, candidate_quat in self._marker_place_orientation_candidates(
+                tray_view_joints):
+            candidate_release_pos_m = [v / 1000.0 for v in target["release"][:3]]
+            candidate_above_pos_m = list(default_above_pos_m)
+            if self._measured_tcp_model and target.get("contact_mm"):
+                contact_m = np.array([
+                    float(target["contact_mm"][axis]) / 1000.0
+                    for axis in ("x", "y", "z")
+                ])
+                candidate_xyzw = [
+                    candidate_quat[1], candidate_quat[2],
+                    candidate_quat[3], candidate_quat[0],
+                ]
+                candidate_tool_z = SciR.from_quat(candidate_xyzw).apply([0.0, 0.0, 1.0])
+                candidate_release_pos_m = (
+                    contact_m - 0.010 * candidate_tool_z).tolist()
+                candidate_above_pos_m = list(candidate_release_pos_m)
+                candidate_above_pos_m[2] += self._marker_place_above_clearance_m
+            self.get_logger().info(
+                f"MARKER_PLACE_ABOVE trying orientation={orientation_name} "
+                f"goal_mm={[round(v * 1000, 1) for v in candidate_above_pos_m]}")
+            candidate_plan = self.plan(
+                tray_view_joints, candidate_above_pos_m, candidate_quat,
+                num_ik_seeds=64, max_attempts=3, timeout_sec=2.0)
+            if candidate_plan is not None:
+                above_plan = candidate_plan
+                above_quat = candidate_quat
+                selected_orientation_name = orientation_name
+                selected_release_pos_m = candidate_release_pos_m
+                selected_above_pos_m = candidate_above_pos_m
+                break
         if above_plan is None:
             self.get_logger().error(
-                "MARKER_PLACE_BLOCKED: above cuRobo plan failed; holding fruit")
+                "MARKER_PLACE_BLOCKED: all above orientation candidates failed; "
+                "holding fruit")
             return "failed", tray_view_joints
+        self.get_logger().info(
+            f"MARKER_PLACE_ORIENTATION selected={selected_orientation_name}")
+        self.runtime_log.log(
+            "marker_place_orientation_selected",
+            source=selected_orientation_name,
+            tray_view_fk_pos_m=tray_view_fk_pos,
+            selected_quat_wxyz=above_quat,
+            selected_above_pos_m=selected_above_pos_m,
+            selected_release_pos_m=selected_release_pos_m,
+            tray_view_quat_wxyz=tray_view_quat,
+            json_quat_wxyz=json_place_quat,
+            tray_view_json_angular_delta_deg=quat_delta_deg,
+        )
         ok_above = self.execute_spline(*above_plan)
         above_joints = list(
             above_plan[0][-1].tolist() if ok_above else tray_view_joints)
@@ -1368,8 +1432,8 @@ class CuroboPlanner(Node):
             return "preview_hold", list(self.current_joints or above_joints)
 
         # RELEASE: cuRobo Cartesian plan — avoids kinematic flip caused by BASE ABS
-        release_pos_m = [v / 1000.0 for v in target["release"][:3]]
-        release_quat = place_quat
+        release_pos_m = selected_release_pos_m
+        release_quat = above_quat
         self.get_logger().info(
             f"MARKER_PLACE_RELEASE_DESCEND cuRobo "
             f"xyz={[round(v, 1) for v in target['release'][:3]]}mm "
@@ -1395,7 +1459,8 @@ class CuroboPlanner(Node):
 
         # RETREAT: release pose에서 먼저 above로 상승한 뒤 tray-view로 복귀한다.
         # release에서 tray-view 관절 자세로 바로 이동하면 tray body를 가로지를 수 있다.
-        above_retreat_plan = self.plan(release_joints, above_pos_m, above_quat)
+        above_retreat_plan = self.plan(
+            release_joints, selected_above_pos_m, above_quat)
         if above_retreat_plan is None or not self.execute_spline(*above_retreat_plan):
             self.get_logger().error(
                 "MARKER_PLACE_RELEASED_BUT_ABOVE_RETREAT_FAILED: holding position")

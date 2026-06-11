@@ -151,6 +151,47 @@ Claude Code 구현을 재검토하면서 실기 전 위험 분기 두 개를 수
 첫 실기 검증은 `execute_marker_place_release:=false`로 ABOVE preview만 확인한 뒤,
 clearance가 확인되면 release를 활성화한다.
 
+### 5-4. Tray-view 정지 원인: legacy TCP 좌표 중복 보정
+
+실기 run:
+
+```text
+logs/runtime/2026-06-11/
+curobo_planner_node_20260611T191813-479a10b2.jsonl
+```
+
+관찰:
+
+- pick, detach, retreat, overview, tray-view 이동 성공
+- `MARKER_PLACE_ABOVE` 목표 `(489.6,-325.5,720.7)mm`에서 `IK_FAIL`
+- fail-closed가 동작하여 과실을 잡은 채 tray-view에서 안전 정지
+
+원인:
+
+- `share_tray`의 `position_tcp_mm`는 기존 Robotis TCP에 연장 파츠 `120mm`를
+  적용하기 위해 접촉점에서 뒤로 물린 좌표다.
+- 현재 cuRobo measured profile의 `grasp_tcp_link`는 이미 flange 기준 `260mm`
+  물리 파지 중심이다.
+- measured profile에서 legacy `position_tcp_mm`를 그대로 사용하여 연장 파츠
+  보정이 중복 적용되었다.
+
+수정:
+
+- measured profile은 `position_contact_mm`를 기준으로 사용한다.
+- 실제 파지 중심이 파츠 끝보다 약 `10mm` 뒤이므로 TOOL `+Z` 반대 방향으로
+  `10mm` 이동한 좌표를 release target으로 생성한다.
+- legacy profile은 기존 `position_tcp_mm`를 유지한다.
+
+최신 slot0 기준 변화:
+
+| 기준 | release target | ABOVE target |
+| --- | --- | --- |
+| 잘못된 legacy TCP 중복 적용 | `(489.6,-325.5,620.7)mm` | z=`720.7mm` |
+| measured grasp center 적용 | `(559.2,-329.6,535.6)mm` | z=`635.6mm` |
+
+다음 실행은 반드시 `execute_marker_place_release:=false`로 corrected ABOVE 위치와
+clearance부터 확인한다.
+
 ### 5-2. 슬롯 레이아웃 확인
 
 ```

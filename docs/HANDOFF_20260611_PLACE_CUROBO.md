@@ -73,6 +73,25 @@ z=627mm BASE ABS로 하강 시 kinematic 충돌 → 다른 IK solution 선택
 
 **실기 미검증** — 다음 세션 첫 번째 작업
 
+### 2-3. Tray-view 정지 원인 및 measured place 좌표 수정
+
+run `curobo_planner_node_20260611T191813-479a10b2.jsonl`에서 pick과 tray-view
+이동은 성공했지만 ABOVE `(489.6,-325.5,720.7)mm`가 `IK_FAIL`로 거부되었다.
+이 정지는 fail-closed가 정상 동작한 결과다.
+
+원인은 tray JSON의 `position_tcp_mm`가 기존 Robotis TCP에서 연장 파츠 120mm를
+보정한 좌표인데, measured `grasp_tcp_link`에 다시 적용되어 tool 길이 보정이
+중복된 것이다.
+
+수정 후 measured profile은:
+
+- `position_contact_mm` 사용
+- 파츠 끝보다 10mm 뒤의 실제 파지 중심으로 변환
+- 최신 slot0 release 약 `(559.2,-329.6,535.6)mm`
+- 최신 slot0 ABOVE 약 `(559.2,-329.6,635.6)mm`
+
+legacy profile만 기존 `position_tcp_mm`를 사용한다.
+
 ---
 
 ## 3. 예상 문제 및 대처

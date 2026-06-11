@@ -1222,8 +1222,31 @@ class CuroboPlanner(Node):
             if not cells:
                 raise ValueError("no cells")
             cell = cells[self._marker_place_slot_idx % len(cells)]
-            tcp = cell["position_tcp_mm"]
             orient = cell["task_orientation_deg"]
+            if self._measured_tcp_model and "position_contact_mm" in cell:
+                # share_tray의 position_tcp_mm는 기존 Robotis TCP에서 연장 파츠
+                # 120mm를 보정한 좌표다. measured grasp_tcp_link는 이미 물리 파지
+                # 중심(파츠 끝보다 약 10mm 뒤)을 ee_link로 사용하므로 중복 보정을
+                # 피하고 contact point에서 TOOL +Z 반대 방향 10mm만 이동한다.
+                contact = cell["position_contact_mm"]
+                rotation = SciR.from_euler(
+                    "ZYZ",
+                    [
+                        float(orient["rx"]),
+                        float(orient["ry"]),
+                        float(orient["rz"]),
+                    ],
+                    degrees=True,
+                )
+                tool_z = rotation.apply([0.0, 0.0, 1.0])
+                tcp = {
+                    axis: float(contact[axis]) - 10.0 * float(tool_z[idx])
+                    for idx, axis in enumerate(("x", "y", "z"))
+                }
+                target_source = "measured_grasp_center_from_contact_minus_10mm"
+            else:
+                tcp = cell["position_tcp_mm"]
+                target_source = "legacy_position_tcp_mm"
             release = [
                 float(tcp["x"]), float(tcp["y"]), float(tcp["z"]),
                 float(orient["rx"]), float(orient["ry"]), float(orient["rz"]),
@@ -1251,12 +1274,16 @@ class CuroboPlanner(Node):
             release_posx_mm_deg=release,
             above_posx_mm_deg=above,
             source_standoff_mm=gripper_offset.get("fingertip_standoff_mm"),
+            target_source=target_source,
+            source_contact_mm=cell.get("position_contact_mm"),
+            source_legacy_tcp_mm=cell.get("position_tcp_mm"),
         )
         return {
             "path": path,
             "slot_index": int(cell.get("index", self._marker_place_slot_idx)),
             "release": release,
             "above": above,
+            "target_source": target_source,
         }
 
     def _execute_marker_place_after_retreat(self, retreat_joints):
@@ -1266,7 +1293,8 @@ class CuroboPlanner(Node):
             return "skip", retreat_joints   # tray 없음/stale → soft skip, hold 없음
 
         self.get_logger().info(
-            f"5 marker place slot={target['slot_index']} via overview/tray-view")
+            f"5 marker place slot={target['slot_index']} via overview/tray-view "
+            f"source={target['target_source']}")
         overview_deg = self.overview_joints_near_current()
         ok, overview_joints = self.plan_to_fixed_joints_pose(
             retreat_joints, overview_deg, "marker place transfer overview",

@@ -259,6 +259,38 @@ curobo_planner_node_20260611T194304-59f31711.jsonl
 다음 실행은 release 없이 ABOVE preview만 수행한다. 모든 후보가 실패하면 실제
 딸기 수확 반복 대신 독립 place benchmark/티칭 pose가 필요하다.
 
+### 5-7. 모든 orientation IKFAIL: ABOVE 높이의 작업반경 문제
+
+run:
+
+```text
+logs/runtime/2026-06-11/
+curobo_planner_node_20260611T195103-6e5b1249.jsonl
+```
+
+관찰:
+
+- tray-view FK 및 top-down yaw 6개 후보가 모두 IKFAIL
+- top-down ABOVE 목표 약 `(527,-302,655)mm`
+- 베이스 원점 기준 목표 거리 약 `0.893m`
+
+분석:
+
+- 계란판이 로봇에 너무 가까운 문제가 아니다.
+- release 목표 자체는 약 `0.823m`지만, 추가 ABOVE `100mm`로 목표가 약
+  `0.893m`까지 멀어져 E0509 작업반경과 orientation 제약 경계에 걸린다.
+- tray localization의 `position_contact_mm`는 이미 계란판 면에서 파츠 끝을
+  `60mm` 띄운 좌표이므로 추가 ABOVE를 반드시 `100mm`로 둘 필요가 없다.
+
+수정:
+
+- orientation 후보마다 ABOVE clearance를 `100 -> 70 -> 50 -> 30mm` 순서로 탐색
+- 각 후보 로그에 베이스 원점 기준 목표 거리 기록
+- 선택 clearance를 runtime JSONL에 기록
+- 추가 ABOVE `30mm`여도 파츠 끝은 계란판 면에서 총 약 `90mm` 위에 위치
+
+다음 테스트도 release를 끈 preview로 수행한다.
+
 ### 5-2. 슬롯 레이아웃 확인
 
 ```

@@ -1358,7 +1358,9 @@ class CuroboPlanner(Node):
 
         # ABOVE: 하향 place 자세 후보 중 도달 가능한 첫 경로를 선택한다. Measured
         # TCP는 orientation마다 파츠 끝->파지 중심 10mm 방향이 달라지므로 후보별로
-        # release/above 위치를 contact point에서 다시 계산한다.
+        # release/above 위치를 contact point에서 다시 계산한다. Tray contact가 이미
+        # 면에서 60mm 위이므로, 100mm ABOVE가 작업반경 경계에서 IK_FAIL이면 더 낮은
+        # clearance도 안전 후보로 탐색한다.
         default_above_pos_m = [v / 1000.0 for v in target["above"][:3]]
         self.get_logger().info(
             f"MARKER_PLACE_ABOVE cuRobo "
@@ -1369,36 +1371,54 @@ class CuroboPlanner(Node):
         above_quat = None
         selected_release_pos_m = None
         selected_above_pos_m = None
-        for orientation_name, candidate_quat in self._marker_place_orientation_candidates(
-                tray_view_joints):
-            candidate_release_pos_m = [v / 1000.0 for v in target["release"][:3]]
-            candidate_above_pos_m = list(default_above_pos_m)
-            if self._measured_tcp_model and target.get("contact_mm"):
-                contact_m = np.array([
-                    float(target["contact_mm"][axis]) / 1000.0
-                    for axis in ("x", "y", "z")
-                ])
-                candidate_xyzw = [
-                    candidate_quat[1], candidate_quat[2],
-                    candidate_quat[3], candidate_quat[0],
-                ]
-                candidate_tool_z = SciR.from_quat(candidate_xyzw).apply([0.0, 0.0, 1.0])
-                candidate_release_pos_m = (
-                    contact_m - 0.010 * candidate_tool_z).tolist()
-                candidate_above_pos_m = list(candidate_release_pos_m)
-                candidate_above_pos_m[2] += self._marker_place_above_clearance_m
-            self.get_logger().info(
-                f"MARKER_PLACE_ABOVE trying orientation={orientation_name} "
-                f"goal_mm={[round(v * 1000, 1) for v in candidate_above_pos_m]}")
-            candidate_plan = self.plan(
-                tray_view_joints, candidate_above_pos_m, candidate_quat,
-                num_ik_seeds=64, max_attempts=3, timeout_sec=2.0)
-            if candidate_plan is not None:
-                above_plan = candidate_plan
-                above_quat = candidate_quat
-                selected_orientation_name = orientation_name
-                selected_release_pos_m = candidate_release_pos_m
-                selected_above_pos_m = candidate_above_pos_m
+        requested_clearance = self._marker_place_above_clearance_m
+        clearance_candidates = []
+        for clearance_m in (requested_clearance, 0.070, 0.050, 0.030):
+            if clearance_m > 0.0 and not any(
+                    abs(clearance_m - existing) < 1e-6
+                    for existing in clearance_candidates):
+                clearance_candidates.append(clearance_m)
+
+        for clearance_m in clearance_candidates:
+            for orientation_name, candidate_quat in self._marker_place_orientation_candidates(
+                    tray_view_joints):
+                candidate_release_pos_m = [v / 1000.0 for v in target["release"][:3]]
+                candidate_above_pos_m = list(default_above_pos_m)
+                if self._measured_tcp_model and target.get("contact_mm"):
+                    contact_m = np.array([
+                        float(target["contact_mm"][axis]) / 1000.0
+                        for axis in ("x", "y", "z")
+                    ])
+                    candidate_xyzw = [
+                        candidate_quat[1], candidate_quat[2],
+                        candidate_quat[3], candidate_quat[0],
+                    ]
+                    candidate_tool_z = SciR.from_quat(candidate_xyzw).apply(
+                        [0.0, 0.0, 1.0])
+                    candidate_release_pos_m = (
+                        contact_m - 0.010 * candidate_tool_z).tolist()
+                    candidate_above_pos_m = list(candidate_release_pos_m)
+                    candidate_above_pos_m[2] += clearance_m
+                else:
+                    candidate_above_pos_m[2] += (
+                        clearance_m - requested_clearance)
+                radial_distance_m = float(np.linalg.norm(candidate_above_pos_m))
+                self.get_logger().info(
+                    f"MARKER_PLACE_ABOVE trying clearance={clearance_m*1000:.0f}mm "
+                    f"orientation={orientation_name} radial={radial_distance_m:.3f}m "
+                    f"goal_mm={[round(v * 1000, 1) for v in candidate_above_pos_m]}")
+                candidate_plan = self.plan(
+                    tray_view_joints, candidate_above_pos_m, candidate_quat,
+                    num_ik_seeds=64, max_attempts=3, timeout_sec=2.0)
+                if candidate_plan is not None:
+                    above_plan = candidate_plan
+                    above_quat = candidate_quat
+                    selected_orientation_name = orientation_name
+                    selected_release_pos_m = candidate_release_pos_m
+                    selected_above_pos_m = candidate_above_pos_m
+                    selected_clearance_m = clearance_m
+                    break
+            if above_plan is not None:
                 break
         if above_plan is None:
             self.get_logger().error(
@@ -1406,7 +1426,8 @@ class CuroboPlanner(Node):
                 "holding fruit")
             return "failed", tray_view_joints
         self.get_logger().info(
-            f"MARKER_PLACE_ORIENTATION selected={selected_orientation_name}")
+            f"MARKER_PLACE_ORIENTATION selected={selected_orientation_name} "
+            f"clearance={selected_clearance_m*1000:.0f}mm")
         self.runtime_log.log(
             "marker_place_orientation_selected",
             source=selected_orientation_name,
@@ -1414,6 +1435,7 @@ class CuroboPlanner(Node):
             selected_quat_wxyz=above_quat,
             selected_above_pos_m=selected_above_pos_m,
             selected_release_pos_m=selected_release_pos_m,
+            selected_clearance_m=selected_clearance_m,
             tray_view_quat_wxyz=tray_view_quat,
             json_quat_wxyz=json_place_quat,
             tray_view_json_angular_delta_deg=quat_delta_deg,

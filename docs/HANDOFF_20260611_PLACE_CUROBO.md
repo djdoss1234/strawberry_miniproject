@@ -122,6 +122,24 @@ orientation도 corrected ABOVE에서 IKFAIL이었다.
 
 다음 테스트는 반드시 release를 끈 상태로 ABOVE preview를 확인한다.
 
+### 2-6. 모든 자세 후보 IKFAIL: ABOVE clearance 작업반경 수정
+
+run `curobo_planner_node_20260611T195103-6e5b1249.jsonl`에서 7개 orientation이
+모두 IKFAIL이었다.
+
+- release 목표 거리: 약 `0.823m`
+- ABOVE 100mm 목표 거리: 약 `0.893m`
+- 원인: 계란판이 너무 가까운 것이 아니라 ABOVE가 작업반경 경계까지 멀어진 것
+
+현재 수정:
+
+- ABOVE clearance `100, 70, 50, 30mm` 순차 탐색
+- 각 clearance마다 orientation 후보 탐색
+- 파츠 끝 contact가 계란판 면에서 이미 60mm 위이므로 추가 30mm도 preview 시
+  총 약 90mm clearance 확보
+
+다음 실행도 release를 끈 preview다.
+
 ---
 
 ## 3. 예상 문제 및 대처

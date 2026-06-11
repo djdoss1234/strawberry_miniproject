@@ -291,6 +291,47 @@ curobo_planner_node_20260611T195103-6e5b1249.jsonl
 
 다음 테스트도 release를 끈 preview로 수행한다.
 
+### 5-8. 낮은 ABOVE도 모든 IKFAIL: 260mm tool의 flange 도달거리 분석
+
+run:
+
+```text
+logs/runtime/2026-06-11/
+curobo_planner_node_20260611T195746-cff71f1b.jsonl
+```
+
+관찰:
+
+- clearance 100/70/50/30mm와 기존 orientation 후보가 모두 IKFAIL
+- 낮은 clearance에서도 실패하므로 TCP 목표 거리만의 문제는 아님
+
+기구학 분석:
+
+- cuRobo 목표는 flange가 아니라 flange에서 260mm 떨어진 `grasp_tcp_link`다.
+- 완전 top-down에서 flange는 TCP보다 260mm 위에 있어야 한다.
+- slot0 근처 예시:
+  - TCP 목표 거리 약 `0.86m`
+  - top-down implied flange 거리 약 `1.05m`: 도달 불가
+  - 사선 하향 `down=0.25`: implied flange 거리 약 `0.75m`
+  - 사선 하향 `down=0.50`: 약 `0.80m`
+  - 사선 하향 `down=0.75`: 약 `0.85m`
+
+결론:
+
+- 계란판이 너무 가까운 것이 아니다.
+- 260mm 연장 파츠를 완전 수직으로 세우면 손목이 작업반경 밖으로 밀린다.
+- 물리적으로 도달하려면 파츠를 계란판 바깥 방향으로 기울인 사선 하향 자세가
+  필요하다.
+
+수정:
+
+- 계란판 방향 radial XY + 하향 성분 `0.25/0.50/0.75` 조합 생성
+- 각 기울기에서 roll `0/±90/180deg` 샘플링
+- 각 후보의 TCP 거리와 implied flange 거리를 로그에 함께 출력
+- 기존 top-down 후보는 비교용으로 뒤에서 유지
+
+다음 실행도 release-off preview다.
+
 ### 5-2. 슬롯 레이아웃 확인
 
 ```

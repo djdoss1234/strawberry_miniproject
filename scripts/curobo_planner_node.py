@@ -1148,15 +1148,43 @@ class CuroboPlanner(Node):
             state.ee_quaternion[0].detach().cpu().numpy().tolist(),
         )
 
-    def _marker_place_orientation_candidates(self, tray_view_joints):
+    def _quat_from_tool_z(self, tool_z, roll_deg=0.0):
+        """원하는 world TOOL +Z 방향과 roll로 quaternion [w,x,y,z] 생성."""
+        z_axis = np.array(tool_z, dtype=float)
+        z_axis /= np.linalg.norm(z_axis)
+        reference = np.array([0.0, 0.0, 1.0])
+        if abs(float(np.dot(reference, z_axis))) > 0.95:
+            reference = np.array([1.0, 0.0, 0.0])
+        x_axis = np.cross(reference, z_axis)
+        x_axis /= np.linalg.norm(x_axis)
+        y_axis = np.cross(z_axis, x_axis)
+        rotation = SciR.from_matrix(np.column_stack((x_axis, y_axis, z_axis)))
+        rotation = rotation * SciR.from_euler("Z", roll_deg, degrees=True)
+        xyzw = rotation.as_quat()
+        return [float(xyzw[3]), float(xyzw[0]), float(xyzw[1]), float(xyzw[2])]
+
+    def _marker_place_orientation_candidates(self, tray_view_joints, target_pos_m):
         """Tray place용 orientation 후보.
 
         tray-view FK와 tray JSON 자세는 현재 slot ABOVE에서 모두 IK_FAIL이었다.
-        계란판 place의 작업 제약은 TOOL +Z가 아래를 향하는 것이므로, 하향 자세를
-        yaw별로 샘플링하고 cuRobo가 도달 가능한 후보를 선택한다.
+        완전 top-down은 260mm tool 때문에 손목을 작업반경 바깥으로 밀 수 있다.
+        따라서 계란판 방향으로 기울어진 사선 하향 TOOL +Z 후보를 먼저 탐색한다.
         """
         _, tray_view_quat = self._curobo_fk_ee_pose(tray_view_joints)
         candidates = [("tray_view_fk", tray_view_quat)]
+
+        target = np.array(target_pos_m, dtype=float)
+        radial_xy = np.array([target[0], target[1], 0.0])
+        radial_xy /= np.linalg.norm(radial_xy)
+        for down_component in (-0.25, -0.50, -0.75):
+            tool_z = radial_xy + np.array([0.0, 0.0, down_component])
+            tool_z /= np.linalg.norm(tool_z)
+            for roll_deg in (0.0, 90.0, -90.0, 180.0):
+                candidates.append((
+                    f"inclined_down_{abs(down_component):.2f}_roll_{roll_deg:+.0f}",
+                    self._quat_from_tool_z(tool_z, roll_deg),
+                ))
+
         for yaw_deg in (0.0, 45.0, -45.0, 90.0, -90.0, 180.0):
             rotation = (
                 SciR.from_euler("Z", yaw_deg, degrees=True)
@@ -1381,7 +1409,7 @@ class CuroboPlanner(Node):
 
         for clearance_m in clearance_candidates:
             for orientation_name, candidate_quat in self._marker_place_orientation_candidates(
-                    tray_view_joints):
+                    tray_view_joints, default_above_pos_m):
                 candidate_release_pos_m = [v / 1000.0 for v in target["release"][:3]]
                 candidate_above_pos_m = list(default_above_pos_m)
                 if self._measured_tcp_model and target.get("contact_mm"):
@@ -1403,9 +1431,20 @@ class CuroboPlanner(Node):
                     candidate_above_pos_m[2] += (
                         clearance_m - requested_clearance)
                 radial_distance_m = float(np.linalg.norm(candidate_above_pos_m))
+                candidate_xyzw = [
+                    candidate_quat[1], candidate_quat[2],
+                    candidate_quat[3], candidate_quat[0],
+                ]
+                candidate_tool_z = SciR.from_quat(candidate_xyzw).apply([0.0, 0.0, 1.0])
+                implied_flange_pos_m = (
+                    np.array(candidate_above_pos_m)
+                    - MEASURED_FLANGE_TO_GRASP_CENTER_M * candidate_tool_z
+                )
+                implied_flange_distance_m = float(np.linalg.norm(implied_flange_pos_m))
                 self.get_logger().info(
                     f"MARKER_PLACE_ABOVE trying clearance={clearance_m*1000:.0f}mm "
-                    f"orientation={orientation_name} radial={radial_distance_m:.3f}m "
+                    f"orientation={orientation_name} tcp_r={radial_distance_m:.3f}m "
+                    f"flange_r={implied_flange_distance_m:.3f}m "
                     f"goal_mm={[round(v * 1000, 1) for v in candidate_above_pos_m]}")
                 candidate_plan = self.plan(
                     tray_view_joints, candidate_above_pos_m, candidate_quat,

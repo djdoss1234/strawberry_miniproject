@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <future>
+#include <sstream>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_srvs/srv/trigger.hpp"
@@ -202,19 +203,19 @@ public:
         return {};
     }
 
-    int read_present_position() {
+    std::pair<int, int> read_present_state() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!real_mode_) return -1;
+        if (!real_mode_) return {-1, -1};
 
-        if (!serial_open()) return -1;
+        if (!serial_open()) return {-1, -1};
 
         std::this_thread::sleep_for(200ms);
 
         // Send FC03 read request
-        auto frame = modbus_rtu::fc03_read_present_position();
+        auto frame = modbus_rtu::fc03_read_present_state();
         if (!serial_write(frame)) {
             serial_close();
-            return -1;
+            return {-1, -1};
         }
 
         // Wait for gripper to process and respond
@@ -225,8 +226,8 @@ public:
         serial_close();
 
         if (response.empty()) {
-            RCLCPP_WARN(logger_, "No response from gripper for position read");
-            return -1;
+            RCLCPP_WARN(logger_, "No response from gripper for state read");
+            return {-1, -1};
         }
 
         // Log raw response for debugging
@@ -239,12 +240,14 @@ public:
         RCLCPP_INFO(logger_, "Gripper response (%zu bytes): %s", response.size(), hex_str.c_str());
 
         int position = modbus_rtu::parse_present_position(response);
+        int current = modbus_rtu::parse_present_current(response);
         if (position >= 0) {
-            RCLCPP_INFO(logger_, "Present position: %d", position);
+            RCLCPP_INFO(logger_, "Present state: position=%d current_raw=%d",
+                        position, current);
         } else {
-            RCLCPP_WARN(logger_, "Failed to parse position from response");
+            RCLCPP_WARN(logger_, "Failed to parse state from response");
         }
-        return position;
+        return {position, current};
     }
 
     std::string namespace_;
@@ -292,14 +295,24 @@ public:
             prefix + "/read_position",
             std::bind(&GripperServiceNode::handle_read_position, this,
                      std::placeholders::_1, std::placeholders::_2));
+        srv_read_state_ = this->create_service<std_srvs::srv::Trigger>(
+            prefix + "/read_state",
+            std::bind(&GripperServiceNode::handle_read_state, this,
+                     std::placeholders::_1, std::placeholders::_2));
 
         position_sub_ = this->create_subscription<std_msgs::msg::Int32>(
             prefix + "/position_cmd", 10,
             std::bind(&GripperServiceNode::handle_position_cmd, this, std::placeholders::_1));
 
         RCLCPP_INFO(this->get_logger(), "Gripper service node started (namespace: %s)", ns.c_str());
-        RCLCPP_INFO(this->get_logger(), "  Services: %s/open, %s/close, %s/read_position",
-                    prefix.c_str(), prefix.c_str(), prefix.c_str());
+        current_pub_ = this->create_publisher<std_msgs::msg::Int32>(
+            prefix + "/present_current_raw", 10);
+        present_position_pub_ = this->create_publisher<std_msgs::msg::Int32>(
+            prefix + "/present_position", 10);
+
+        RCLCPP_INFO(this->get_logger(),
+                    "  Services: %s/open, %s/close, %s/read_position, %s/read_state",
+                    prefix.c_str(), prefix.c_str(), prefix.c_str(), prefix.c_str());
         RCLCPP_INFO(this->get_logger(), "  Topics: %s/position_cmd (sub), %s/stroke (pub)",
                     prefix.c_str(), prefix.c_str());
     }
@@ -373,10 +386,34 @@ private:
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
         RCLCPP_INFO(this->get_logger(), "Read present position request received");
-        int position = worker_->read_present_position();
-        response->success = true;
+        auto [position, current] = worker_->read_present_state();
+        publish_present_state(position, current);
+        response->success = position >= 0;
         response->message = std::to_string(position);
         RCLCPP_INFO(this->get_logger(), "Present position read: %d", position);
+    }
+
+    void handle_read_state(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        RCLCPP_INFO(this->get_logger(), "Read present state request received");
+        auto [position, current] = worker_->read_present_state();
+        publish_present_state(position, current);
+        std::ostringstream stream;
+        stream << "{\"position\":" << position
+               << ",\"current_raw\":" << current << "}";
+        response->success = position >= 0 && current >= 0;
+        response->message = stream.str();
+    }
+
+    void publish_present_state(int position, int current) {
+        auto position_msg = std_msgs::msg::Int32();
+        position_msg.data = position;
+        present_position_pub_->publish(position_msg);
+        auto current_msg = std_msgs::msg::Int32();
+        current_msg.data = current;
+        current_pub_->publish(current_msg);
     }
 
     void handle_position_cmd(const std_msgs::msg::Int32::SharedPtr msg) {
@@ -394,9 +431,12 @@ private:
     int current_position_;
     std::unique_ptr<GripperWorker> worker_;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr stroke_pub_;
+    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr current_pub_;
+    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr present_position_pub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_open_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_close_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_read_position_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_read_state_;
     rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr position_sub_;
 };
 

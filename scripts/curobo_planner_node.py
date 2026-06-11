@@ -31,6 +31,7 @@ from runtime_jsonl_logger import RuntimeJsonlLogger
 
 # ── 파지 파라미터 ──────────────────────────────────────────────────────────────
 GRASP_RETRY_OFFSETS  = [0.015, 0.030, 0.040, 0.050, 0.070]
+MEASURED_TCP_FINAL_STANDOFF_M = 0.030
 LEFTMOST_GRASP_RETRY_OFFSETS = [0.030, 0.035, 0.040, 0.045, 0.050, 0.070]
 LEFTMOST_GRASP_X_CORR_M = 0.005   # x < -300mm: +X 보정 (ELBOW_UP 드리프트 보정)
 LEFTMOST_EXTRA_ADVANCE_REQUEST_M = 0.065  # 실기 요청값; wall safety gate가 실제 실행량을 제한
@@ -50,7 +51,23 @@ NEIGHBOR_SPHERE_RADIUS_M = 0.030
 DETACH_PULL_DOWN_MM  = 40.0   # 파지 후 BASE -Z 당기기 거리 (mm)
 DETACH_PULL_VEL_MM_S = 50.0   # 저속 분리 (줄기 충격 방지)
 
-GRIPPER_LEN      = 0.160       # ee_link → TCP (m)
+# Tool geometry measured on 2026-06-11.
+# Physical grasp center is about 10mm behind the part tips:
+#   flange -> original gripper: 160mm
+#   flange -> part tips:        270mm
+#   flange -> grasp center:     260mm
+#
+# The current cuRobo URDF still places gripper_rh_p12_rn_base at link_6 and the
+# proven SW baseline was tuned with a 160mm software offset plus extra advance.
+# Keep that legacy offset until an explicit grasp_tcp_link and collision model
+# are validated; changing it directly would shift physical motion by about 100mm.
+LEGACY_EE_TO_TCP_OFFSET_M = 0.160
+MEASURED_FLANGE_TO_GRIPPER_M = 0.160
+MEASURED_FLANGE_TO_PART_TIP_M = 0.270
+MEASURED_FLANGE_TO_GRASP_CENTER_M = 0.260
+TCP_MODEL_SHORTFALL_M = (
+    MEASURED_FLANGE_TO_GRASP_CENTER_M - LEGACY_EE_TO_TCP_OFFSET_M
+)
 WALL_SURFACE_Y_M = 0.672       # whiteboard 전면 Y — berry Y 클램핑 상한 (FK drift 보정)
 WALL_QUAT_WXYZ   = [0.497, -0.497, 0.503, 0.503]   # approach_dir = [0, 1, 0] 정확히 수직
 # 유도: [0.488, -0.506, 0.494, 0.512] (elevation 0°) 에 world-Z -2.06° 추가 보정
@@ -61,6 +78,14 @@ GRASP_QUAT_RETRY_VARIANTS: list = [
     ("base",  [1, 0, 0],  -5.0),  # 5° 아래 (2차)
     ("base",  [1, 0, 0],   0.0),  # 수평 (3차 — 잎 많은 경우 밀릴 수 있음)
     ("base",  [1, 0, 0],  +5.0),  # 5° 위 (4차)
+]
+MEASURED_TCP_GRASP_QUAT_RETRY_VARIANTS: list = [
+    ("base", [1, 0, 0], -10.0),
+    ("base", [1, 0, 0],  -5.0),
+    ("base", [1, 0, 0],   0.0),
+    ("base", [1, 0, 0],  +5.0),
+    ("base", [1, 0, 0], +10.0),
+    ("base", [1, 0, 0], +15.0),
 ]
 
 CARTESIAN_PLAN_MAX_ATTEMPTS = 1
@@ -202,6 +227,19 @@ class CuroboPlanner(Node):
         self._scene_positions: list = []
 
         # ── cuRobo 초기화 ──────────────────────────────────────────────────────
+        self.declare_parameter("tool_model_profile", "measured_tcp_260mm")
+        self._tool_model_profile = str(
+            self.get_parameter("tool_model_profile").value).strip()
+        if self._tool_model_profile not in {"measured_tcp_260mm", "legacy_160mm"}:
+            raise ValueError(
+                "tool_model_profile must be measured_tcp_260mm or legacy_160mm")
+        self._measured_tcp_model = self._tool_model_profile == "measured_tcp_260mm"
+        self._ee_to_tcp_offset_m = (
+            0.0 if self._measured_tcp_model else LEGACY_EE_TO_TCP_OFFSET_M
+        )
+        self.declare_parameter("measured_tcp_plan_only", True)
+        self._measured_tcp_plan_only = bool(
+            self.get_parameter("measured_tcp_plan_only").value)
         config_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "config", "curobo"
@@ -214,7 +252,12 @@ class CuroboPlanner(Node):
             )
 
         tensor_args = TensorDeviceType(device=torch.device("cuda:0"))
-        with open(os.path.join(config_dir, "e0509_gripper.yml"), "r", encoding="utf-8") as f:
+        robot_config_name = (
+            "e0509_gripper_measured_tcp.yml"
+            if self._measured_tcp_model
+            else "e0509_gripper.yml"
+        )
+        with open(os.path.join(config_dir, robot_config_name), "r", encoding="utf-8") as f:
             robot_cfg_data = yaml.safe_load(f)
         robot_kin = robot_cfg_data["robot_cfg"]["kinematics"]
         robot_kin["urdf_path"] = os.path.join(config_dir, "e0509_gripper.urdf")
@@ -236,11 +279,14 @@ class CuroboPlanner(Node):
 
         self.declare_parameter("enable_marker_place_sequence", False)
         self.declare_parameter("execute_marker_place_release", False)
+        self.declare_parameter("allow_unverified_grasp_place", False)
+        self.declare_parameter("grasp_current_contact_threshold_raw", -1)
         self.declare_parameter("tray_cells_json", "")
         self.declare_parameter("marker_place_max_age_sec", 3600.0)
         self.declare_parameter("marker_place_above_clearance_m", 0.100)
         self.declare_parameter(
-            "leftmost_extra_advance_request_m", LEFTMOST_EXTRA_ADVANCE_REQUEST_M)
+            "leftmost_extra_advance_request_m",
+            0.0 if self._measured_tcp_model else LEFTMOST_EXTRA_ADVANCE_REQUEST_M)
         self.declare_parameter(
             "leftmost_wall_safety_margin_m", LEFTMOST_WALL_SAFETY_MARGIN_M)
         self.declare_parameter("leftmost_allow_wall_model_override", False)
@@ -248,6 +294,10 @@ class CuroboPlanner(Node):
             self.get_parameter("enable_marker_place_sequence").value)
         self._execute_marker_place_release = bool(
             self.get_parameter("execute_marker_place_release").value)
+        self._allow_unverified_grasp_place = bool(
+            self.get_parameter("allow_unverified_grasp_place").value)
+        self._grasp_current_contact_threshold_raw = int(
+            self.get_parameter("grasp_current_contact_threshold_raw").value)
         self._tray_cells_json = os.path.expanduser(
             str(self.get_parameter("tray_cells_json").value))
         self._marker_place_max_age_sec = float(
@@ -300,8 +350,8 @@ class CuroboPlanner(Node):
             Trigger, "/dsr01/gripper/open", callback_group=self.service_cb_group)
         self.cli_gripper_close = self.create_client(
             Trigger, "/dsr01/gripper/close", callback_group=self.service_cb_group)
-        self.cli_gripper_read_pos = self.create_client(
-            Trigger, "/dsr01/gripper/read_position", callback_group=self.service_cb_group)
+        self.cli_gripper_read_state = self.create_client(
+            Trigger, "/dsr01/gripper/read_state", callback_group=self.service_cb_group)
 
         self.get_logger().info("cuRobo Planner Ready!")
         self.get_logger().info(f"Runtime JSONL: {self.runtime_log.path}")
@@ -315,8 +365,18 @@ class CuroboPlanner(Node):
             leftmost_wall_safety_margin_m=self._leftmost_wall_safety_margin_m,
             leftmost_allow_wall_model_override=self._leftmost_allow_wall_model_override,
             pre_approach_offset_m=PRE_APPROACH_OFFSET,
+            tool_model_profile=self._tool_model_profile,
+            measured_tcp_plan_only=self._measured_tcp_plan_only,
+            ee_to_tcp_offset_m=self._ee_to_tcp_offset_m,
+            legacy_ee_to_tcp_offset_m=LEGACY_EE_TO_TCP_OFFSET_M,
+            measured_flange_to_gripper_m=MEASURED_FLANGE_TO_GRIPPER_M,
+            measured_flange_to_part_tip_m=MEASURED_FLANGE_TO_PART_TIP_M,
+            measured_flange_to_grasp_center_m=MEASURED_FLANGE_TO_GRASP_CENTER_M,
+            tcp_model_shortfall_m=TCP_MODEL_SHORTFALL_M,
             enable_marker_place=self._enable_marker_place,
             execute_marker_place_release=self._execute_marker_place_release,
+            allow_unverified_grasp_place=self._allow_unverified_grasp_place,
+            grasp_current_contact_threshold_raw=self._grasp_current_contact_threshold_raw,
             marker_place_max_age_sec=self._marker_place_max_age_sec,
         )
         base_approach_dir = np.array(quat_rotate_vec(WALL_QUAT_WXYZ, [0.0, 0.0, 1.0]))
@@ -330,7 +390,8 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"  WALL_QUAT_WXYZ={WALL_QUAT_WXYZ} "
             f"approach_dir={np.round(base_approach_dir, 4).tolist()} "
-            f"elevation={base_elevation_deg:+.1f}deg  variants={len(GRASP_QUAT_RETRY_VARIANTS)}")
+            f"elevation={base_elevation_deg:+.1f}deg  "
+            f"variants={len(self.grasp_quat_variants())}")
         self.get_logger().info(
             f"  LEFTMOST horizontal fallback x_corr="
             f"{LEFTMOST_GRASP_X_CORR_M*1000:+.0f}mm "
@@ -339,11 +400,23 @@ class CuroboPlanner(Node):
             f"wall_margin={self._leftmost_wall_safety_margin_m*1000:.0f}mm "
             f"wall_override={self._leftmost_allow_wall_model_override} "
             f"pre_approach={PRE_APPROACH_OFFSET*1000:.0f}mm")
+        if self._measured_tcp_model:
+            self.get_logger().warn(
+                "  TOOL_MODEL=measured_tcp_260mm: cuRobo ee_link is the measured "
+                "grasp center; legacy length compensation and default extra advance "
+                f"are disabled. plan_only={self._measured_tcp_plan_only}.")
+        else:
+            self.get_logger().warn(
+                "  TOOL_GEOMETRY_LEGACY: planner offset="
+                f"{LEGACY_EE_TO_TCP_OFFSET_M*1000:.0f}mm, measured grasp center="
+                f"{MEASURED_FLANGE_TO_GRASP_CENTER_M*1000:.0f}mm "
+                f"(model shortfall={TCP_MODEL_SHORTFALL_M*1000:.0f}mm).")
         if os.path.exists(ENVIRONMENT_YAML):
             self.get_logger().info(f"  environment loaded: {ENVIRONMENT_YAML}")
         self.get_logger().info(
             f"  marker place: enabled={self._enable_marker_place} "
             f"release={self._execute_marker_place_release} "
+            f"allow_unverified_grasp={self._allow_unverified_grasp_place} "
             f"max_age={self._marker_place_max_age_sec:.0f}s")
 
         # 노드 시작 시 그리퍼를 approach 위치로 초기화 (2s 후 — gripper_service_node 연결 여유)
@@ -511,12 +584,19 @@ class CuroboPlanner(Node):
         return [float(np.clip(j, lo, hi)) for j, (lo, hi) in zip(joints, self.JOINT_LIMITS)]
 
     def grasp_candidates_for_target(self, straw):
+        if self._measured_tcp_model:
+            return [MEASURED_TCP_FINAL_STANDOFF_M]
         if straw[0] > 0.25:
             return [-0.03, 0.0]
         if straw[0] < -0.30:
             # 더 깊은 30/35mm부터 검사하되 cuRobo가 검증한 endpoint만 실행한다.
             return LEFTMOST_GRASP_RETRY_OFFSETS
         return GRASP_RETRY_OFFSETS
+
+    def grasp_quat_variants(self):
+        if self._measured_tcp_model:
+            return MEASURED_TCP_GRASP_QUAT_RETRY_VARIANTS
+        return GRASP_QUAT_RETRY_VARIANTS
 
     def call_trigger(self, client):
         if not client.wait_for_service(timeout_sec=3.0):
@@ -527,29 +607,41 @@ class CuroboPlanner(Node):
             time.sleep(0.1)
 
     def _verify_grasp(self):
-        """read_position 서비스로 jaw 위치 판독 → GRASP_EMPTY/GRASP_CONTACT_DETECTED/GRASP_UNVERIFIED 반환."""
-        if not self.cli_gripper_read_pos.wait_for_service(timeout_sec=0.5):
-            return "GRASP_UNVERIFIED", -1, "read_position service unavailable"
-        future = self.cli_gripper_read_pos.call_async(Trigger.Request())
+        """Position/current feedback로 자동 접촉 판정. 사람 라벨은 정확도 검증에 유지한다."""
+        if not self.cli_gripper_read_state.wait_for_service(timeout_sec=0.5):
+            return "GRASP_UNVERIFIED", -1, -1, "read_state service unavailable"
+        future = self.cli_gripper_read_state.call_async(Trigger.Request())
         t0 = time.time()
         while not future.done() and (time.time() - t0) < GRASP_VERIFY_TIMEOUT_SEC:
             time.sleep(0.05)
         if not future.done():
-            return "GRASP_UNVERIFIED", -1, "read_position timeout"
+            return "GRASP_UNVERIFIED", -1, -1, "read_state timeout"
         res = future.result()
         if not res or not res.success:
-            return "GRASP_UNVERIFIED", -1, "read_position service error"
+            return "GRASP_UNVERIFIED", -1, -1, "read_state service error"
         try:
-            position = int(res.message)
-        except (ValueError, AttributeError):
-            return "GRASP_UNVERIFIED", -1, f"parse error: {res.message!r}"
-        if position < 0:
-            return "GRASP_UNVERIFIED", position, "hardware read failed (virtual mode or serial error)"
+            state = json.loads(res.message)
+            position = int(state["position"])
+            current_raw = int(state["current_raw"])
+        except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
+            return "GRASP_UNVERIFIED", -1, -1, f"parse error: {res.message!r}"
+        if position < 0 or current_raw < 0:
+            return (
+                "GRASP_UNVERIFIED", position, current_raw,
+                "hardware state read failed (virtual mode or serial error)")
         if position >= GRASP_EMPTY_POSITION_THRESHOLD:
-            return "GRASP_EMPTY", position, (
+            return "GRASP_EMPTY", position, current_raw, (
                 f"fully closed (pos={position} >= threshold={GRASP_EMPTY_POSITION_THRESHOLD})")
-        return "GRASP_CONTACT_DETECTED", position, (
-            f"jaw stopped at pos={position} < threshold={GRASP_EMPTY_POSITION_THRESHOLD}")
+        if (
+            self._grasp_current_contact_threshold_raw >= 0
+            and current_raw < self._grasp_current_contact_threshold_raw
+        ):
+            return "GRASP_UNVERIFIED", position, current_raw, (
+                f"position indicates contact but current={current_raw} below calibrated "
+                f"threshold={self._grasp_current_contact_threshold_raw}")
+        return "GRASP_CONTACT_DETECTED", position, current_raw, (
+            f"jaw stopped at pos={position} and current_raw={current_raw}; "
+            f"current threshold={'disabled' if self._grasp_current_contact_threshold_raw < 0 else self._grasp_current_contact_threshold_raw}")
 
     # ── 플래닝 ────────────────────────────────────────────────────────────────
 
@@ -1228,7 +1320,8 @@ class CuroboPlanner(Node):
 
         # Y 클램핑: berry는 벽 표면보다 뒤에 있을 수 없음 (FK drift 보정)
         raw_y = float(p.y)
-        if raw_y > WALL_SURFACE_Y_M:
+        wall_y_clamped = raw_y > WALL_SURFACE_Y_M
+        if wall_y_clamped:
             self.get_logger().warn(
                 f"Detection Y={raw_y*1000:.0f}mm > wall surface {WALL_SURFACE_Y_M*1000:.0f}mm "
                 f"(FK calibration drift) — clamped to {WALL_SURFACE_Y_M*1000:.0f}mm")
@@ -1256,19 +1349,20 @@ class CuroboPlanner(Node):
             raw_target_m=raw_straw,
             grasp_target_m=straw,
             grasp_z_bias_m=GRASP_Z_BIAS,
-            wall_y_clamped=bool(float(p.y) > WALL_SURFACE_Y_M),
+            wall_y_clamped=wall_y_clamped,
         )
 
         self._register_neighbor_obstacles(straw)
         self.motion_gen.detach_object_from_robot()
 
-        if raw_straw[0] < -0.30:
+        if raw_straw[0] < -0.30 and not self._measured_tcp_model:
             straw[0] += LEFTMOST_GRASP_X_CORR_M
 
         # 2. Grasp (cuRobo 2-step): 6cm pre-approach → 직선 진입
         # 직전 측방 편차가 줄기 형상/검출점 영향인지 분리하기 위해 6cm를 재검증한다.
+        grasp_quat_variants = self.grasp_quat_variants()
         n_offsets = len(grasp_retry_offsets)
-        n_quats   = len(GRASP_QUAT_RETRY_VARIANTS)
+        n_quats   = len(grasp_quat_variants)
         self.get_logger().info(
             f"2 grasp (CuRobo 2-step {PRE_APPROACH_OFFSET*100:.0f}cm pre) — "
             f"trying {n_offsets} offsets × {n_quats} quats "
@@ -1281,14 +1375,16 @@ class CuroboPlanner(Node):
         used_approach_dir = None
         used_grasp_ee_pos = None
         grasp_attempt = 0
-        for quat_frame, axis, quat_deg in GRASP_QUAT_RETRY_VARIANTS:
+        for quat_frame, axis, quat_deg in grasp_quat_variants:
             q_delta = quat_from_axis_angle(axis, np.deg2rad(quat_deg))
             if quat_frame == "base":
                 q_retry = quat_multiply_wxyz(q_delta, WALL_QUAT_WXYZ)
             else:
                 q_retry = quat_multiply_wxyz(WALL_QUAT_WXYZ, q_delta)
             approach_dir = np.array(quat_rotate_vec(q_retry, [0.0, 0.0, 1.0]))
-            ee_pre = straw - (PRE_APPROACH_OFFSET + GRIPPER_LEN) * approach_dir
+            ee_pre = straw - (
+                PRE_APPROACH_OFFSET + self._ee_to_tcp_offset_m
+            ) * approach_dir
             r_pre_for_variant = self.plan(
                 self.current_joints, ee_pre.tolist(), q_retry, num_ik_seeds=48
             )
@@ -1297,6 +1393,23 @@ class CuroboPlanner(Node):
                 continue
             pre_joints = r_pre_for_variant[0][-1].tolist()
 
+            # The measured TCP model intentionally validates the long move only.
+            # cuRobo repeatedly rejects the final 30~60mm near the wall even
+            # though the taught baseline executes that segment as a guarded,
+            # straight Doosan MoveLine. Keep the TCP at least 30mm from the
+            # modeled wall and validate the final segment by distance gate.
+            if self._measured_tcp_model:
+                ret_pre = r_pre_for_variant
+                ret_grasp = r_pre_for_variant
+                used_grasp_offset = MEASURED_TCP_FINAL_STANDOFF_M
+                used_grasp_variant = (quat_frame, axis, quat_deg)
+                used_approach_dir = approach_dir
+                used_grasp_ee_pos = (
+                    straw - MEASURED_TCP_FINAL_STANDOFF_M * approach_dir
+                )
+                grasp_attempt += 1
+                break
+
             for grasp_offset in grasp_retry_offsets:
                 grasp_attempt += 1
                 # 2-step 구조에서 grasp endpoint는 pre-approach보다 target에
@@ -1304,7 +1417,9 @@ class CuroboPlanner(Node):
                 # 음수가 되어 정확도 보장 목적이 깨진다.
                 if grasp_offset >= PRE_APPROACH_OFFSET:
                     continue
-                ee_g_try = straw - (grasp_offset + GRIPPER_LEN) * approach_dir
+                ee_g_try = straw - (
+                    grasp_offset + self._ee_to_tcp_offset_m
+                ) * approach_dir
                 r_grasp = self.plan(pre_joints, ee_g_try.tolist(), q_retry, num_ik_seeds=32)
                 if r_grasp is None:
                     continue
@@ -1344,6 +1459,30 @@ class CuroboPlanner(Node):
             self._clear_neighbor_obstacles()
             self._reset_gripper()
             self.pick_complete_pub.publish(Empty())
+            return
+
+        if self._measured_tcp_model and self._measured_tcp_plan_only:
+            self.get_logger().warn(
+                "MEASURED_TCP_PLAN_ONLY: valid pre-approach found and guarded "
+                f"{(PRE_APPROACH_OFFSET - used_grasp_offset)*1000:.0f}mm final "
+                "MoveLine prepared; "
+                "no robot motion dispatched. Set measured_tcp_plan_only:=false only "
+                "after reviewing the target and keeping E-stop ready.")
+            self.runtime_log.log(
+                "measured_tcp_plan_only_hold",
+                grasp_offset_m=used_grasp_offset,
+                grasp_variant=used_grasp_variant,
+                approach_dir=used_approach_dir,
+                planned_pre_endpoint_rad=ret_pre[0][-1].tolist(),
+                planned_grasp_endpoint_rad=ret_grasp[0][-1].tolist(),
+                final_standoff_m=used_grasp_offset,
+                guarded_final_move_line_m=PRE_APPROACH_OFFSET - used_grasp_offset,
+                pick_complete_published=False,
+            )
+            self._clear_neighbor_obstacles()
+            self.get_logger().warn(
+                "MEASURED_TCP_PLAN_ONLY_HOLD: /pick_complete was not published, "
+                "so the scan executor must not return home or advance automatically.")
             return
 
         # pre-approach 실행 후 직선 진입
@@ -1468,16 +1607,19 @@ class CuroboPlanner(Node):
         time.sleep(1.5)
 
         # 3b. VERIFY_GRASP — 실제 그리퍼 위치를 읽어 파지 여부 판정
-        grasp_result, present_pos, grasp_reason = self._verify_grasp()
+        grasp_result, present_pos, present_current_raw, grasp_reason = self._verify_grasp()
         self.get_logger().info(
-            f"VERIFY_GRASP: {grasp_result} present_pos={present_pos} — {grasp_reason}")
+            f"VERIFY_GRASP: {grasp_result} present_pos={present_pos} "
+            f"current_raw={present_current_raw} — {grasp_reason}")
         self.runtime_log.log(
             "verify_grasp",
             result_code=grasp_result,
             present_position=present_pos,
+            present_current_raw=present_current_raw,
             reason=grasp_reason,
             close_command_pos=700,
             empty_threshold=GRASP_EMPTY_POSITION_THRESHOLD,
+            current_contact_threshold_raw=self._grasp_current_contact_threshold_raw,
         )
 
         # 4. BASE -Z 당기기로 줄기 분리 후 직선 역진 retreat
@@ -1486,11 +1628,16 @@ class CuroboPlanner(Node):
             f"at {DETACH_PULL_VEL_MM_S:.0f}mm/s")
         self._execute_pitch_detach()  # 실패해도 retreat은 항상 실행
 
-        # 직선 역진 retreat (extra advance만 역진)
+        # 실측 TCP 모델은 cuRobo가 pre-approach까지만 계획하므로 최종 MoveLine
+        # 전체를 역진한다. Legacy 모델은 기존 검증 baseline대로 extra advance만
+        # 역진하고 이후 joint-space 복귀를 사용한다.
+        reverse_distance_m = extra_advance_m
+        if self._measured_tcp_model:
+            reverse_distance_m += final_approach_distance
         reverse_ok = True
-        if extra_advance_m > 0.0:
+        if reverse_distance_m > 0.0:
             reverse_ok = self.execute_tool_z_line(
-                -extra_advance_m,
+                -reverse_distance_m,
                 motion_label="RETREAT",
                 vel_mm_s=RETREAT_VEL_MM_S,
                 acc_mm_s2=RETREAT_ACC_MM_S2,
@@ -1519,13 +1666,21 @@ class CuroboPlanner(Node):
             reason="no sensor; pitch detach executed",
         )
 
-        # Place 게이트: 빈 파지가 확인된 경우만 차단.
-        # GRASP_CONTACT_DETECTED → 파지 확인 → 허용
-        # GRASP_UNVERIFIED     → 센서 없음/virtual → fail-open, 허용
-        # GRASP_EMPTY          → jaw 완전 닫힘, 확실히 빔 → 차단
-        _allow_place = (grasp_result != "GRASP_EMPTY")
+        # Place 게이트 기본값은 fail-closed다. 센서 판독이 불가능한 실험에서만
+        # allow_unverified_grasp_place를 명시적으로 켜고 사람 관찰 라벨을 남긴다.
+        _allow_place = (
+            grasp_result == "GRASP_CONTACT_DETECTED"
+            or (
+                grasp_result == "GRASP_UNVERIFIED"
+                and self._allow_unverified_grasp_place
+            )
+        )
         if not _allow_place:
-            place_block_reason = "GRASP_EMPTY: jaw fully closed, nothing grabbed"
+            place_block_reason = (
+                "GRASP_EMPTY: jaw fully closed, nothing grabbed"
+                if grasp_result == "GRASP_EMPTY"
+                else "GRASP_UNVERIFIED: enable explicit override only after visual check"
+            )
             self.get_logger().warn(
                 f"PLACE_GATE_BLOCKED ({grasp_result}): {place_block_reason}")
             self.runtime_log.log(

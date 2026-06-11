@@ -4,10 +4,8 @@ robot_cfg:
     urdf_path: "e0509_gripper.urdf"
     asset_root_path: ""
     base_link: "base_link"
-    # Legacy baseline: this link is still coincident with link_6 in the URDF.
-    # Measured physical grasp center is about 0.260m from the flange. Do not
-    # treat this link as the physical TCP; see docs/tool_geometry_measurement_20260611.md.
-    ee_link: "gripper_rh_p12_rn_base"
+    # Measured physical grasp center: link_6/flange + TOOL Z 0.260m.
+    ee_link: "grasp_tcp_link"
     collision_link_names:
       [
         "base_link",
@@ -18,6 +16,7 @@ robot_cfg:
         "link_5",
         "link_6",
         "gripper_rh_p12_rn_base",
+        "grasp_tcp_link",
         "attached_object",
       ]
     collision_spheres: "e0509_spheres.yml"
@@ -31,9 +30,10 @@ robot_cfg:
         "link_2": ["link_3", "link_4"],
         "link_3": ["link_4", "link_5"],
         "link_4": ["link_5", "link_6"],
-        "link_5": ["link_6", "gripper_rh_p12_rn_base"],
-        "link_6": ["gripper_rh_p12_rn_base", "attached_object"],
-        "gripper_rh_p12_rn_base": ["attached_object"],
+        "link_5": ["link_6", "gripper_rh_p12_rn_base", "grasp_tcp_link"],
+        "link_6": ["gripper_rh_p12_rn_base", "grasp_tcp_link", "attached_object"],
+        "gripper_rh_p12_rn_base": ["grasp_tcp_link", "attached_object"],
+        "grasp_tcp_link": ["attached_object"],
       }
     self_collision_buffer:
       {
@@ -45,6 +45,7 @@ robot_cfg:
         "link_5": 0.0,
         "link_6": 0.0,
         "gripper_rh_p12_rn_base": 0.02,
+        "grasp_tcp_link": 0.0,
         "attached_object": 0.0,
       }
     lock_joints: {}
@@ -52,10 +53,9 @@ robot_cfg:
       {
         "attached_object":
           {
-            "parent_link_name": "gripper_rh_p12_rn_base",
+            "parent_link_name": "grasp_tcp_link",
             "link_name": "attached_object",
-            # Legacy placeholder, not the measured 0.260m physical grasp TCP.
-            "fixed_transform": [0, 0, 0.16, 1, 0, 0, 0],
+            "fixed_transform": [0, 0, 0, 1, 0, 0, 0],
             "joint_type": "FIXED",
             "joint_name": "attach_joint",
           },

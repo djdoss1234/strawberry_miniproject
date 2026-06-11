@@ -70,6 +70,8 @@ install(PROGRAMS
   scripts/environment_visualizer.py
   scripts/runtime_jsonl_logger.py
   scripts/validate_runtime_jsonl.py
+  scripts/label_harvest_attempt.py
+  scripts/summarize_harvest_kpis.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

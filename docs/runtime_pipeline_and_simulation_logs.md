@@ -159,6 +159,19 @@ GRASP_POSE_REACHED
 - 자동 판정은 gripper hardware read 실패로 `GRASP_UNVERIFIED`이므로, 이 결과를
   정량 성공률로 집계하지 않는다.
 
+## 2026-06-11 실측 TCP 전환 체크포인트
+
+- 플랜지에서 파츠 끝단까지 약 `270mm`, 실제 파지 홈까지 약 `260mm`로 실측했다.
+- 기존 planner의 `160mm` 보정은 실제 파지 TCP가 아니라 legacy baseline 값이다.
+- 새 `grasp_tcp_link` 및 `measured_tcp_260mm` cuRobo 프로필을 추가했다.
+- 실측 프로필은 기본 plan-only이며 legacy extra advance를 사용하지 않는다.
+- plan-only 실험에서 60mm pre-approach는 성공했으나 보드 근처 endpoint는
+  반복 IK 실패했다.
+- 현재 정책은 cuRobo pre-approach 후 guarded TOOL `+Z 30mm` MoveLine 진입,
+  파지 후 TOOL `-Z 30mm` 역진이다.
+- 좌표계와 상세 트러블슈팅은
+  `docs/tool_geometry_measurement_20260611.md`를 기준 문서로 사용한다.
+
 ## 6. 시뮬레이션 재생용 JSONL 로그
 
 ### 저장 위치
@@ -260,3 +273,18 @@ python3 scripts/validate_runtime_jsonl.py logs/runtime/2026-06-08/*.jsonl
 - 사람이 판정한 `SUCCESS`, `GRASP_EMPTY`, `DETACH_FAIL` 결과
 - calibration ID, model checksum, scene ID
 - simulator용 ROS topic replay 또는 rosbag2 변환 도구
+
+## 9. 2026-06-11 실측 TCP 전환 체크포인트
+
+- 실측 파지 중심을 flange 기준 약 `260mm`로 모델링한
+  `grasp_tcp_link` 프로필을 추가했다.
+- 기존 `160mm` 길이 보정과 기본 extra advance는 실측 프로필에서 끈다.
+- 최신 plan-only run
+  `curobo_planner_node_20260611T153321-6fdb516e.jsonl`에서 60mm
+  pre-approach 계획과 guarded 30mm final MoveLine 준비에 성공했다.
+- 이 run은 실제 모션을 실행하지 않은 계획 검증이다.
+- plan-only가 `pick_complete`를 발행하여 상위 scan executor가 홈 복귀하던
+  문제를 수정했다. 이후 plan-only 로그는 `measured_tcp_plan_only_hold`를
+  기록하고 자동 진행 신호를 발행하지 않는다.
+- 상세 인계와 다음 검증 절차:
+  `docs/HANDOFF_20260611_MEASURED_TCP.md`

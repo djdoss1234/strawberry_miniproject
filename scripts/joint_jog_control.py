@@ -7,6 +7,11 @@ Keys:
   Up/Down   move selected joint +/- step degrees
   Left/Right step degrees down/up
   g         type 6 joint degrees and move
+  n         move to named pose (home/overview/nw/ne/se/sw) with speed input
+  o         gripper open
+  c         gripper close
+  f         gripper set position value
+  v         set velocity/acc
   p         print current joints
   h         help
   q         quit
@@ -22,6 +27,7 @@ import os
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Int32
 from std_srvs.srv import Trigger
 from dsr_msgs2.srv import GetRobotMode, GetRobotState, MoveJoint
 
@@ -97,6 +103,7 @@ class JointJogControl(Node):
         self.cli_state = self.create_client(GetRobotState, "/dsr01/system/get_robot_state")
         self.cli_gripper_open = self.create_client(Trigger, "/dsr01/gripper/open")
         self.cli_gripper_close = self.create_client(Trigger, "/dsr01/gripper/close")
+        self.gripper_pos_pub = self.create_publisher(Int32, "/dsr01/gripper/position_cmd", 10)
         self.get_logger().info("Joint jog control ready")
         self.print_help()
 
@@ -122,9 +129,11 @@ class JointJogControl(Node):
         print("  w/s       move selected joint +/- step degrees (fallback)")
         print("  a/d       step degrees -/+ (fallback)")
         print("  g         input 6 joint degrees and move")
-        print("  n         move to named pose (home/overview/nw/ne/se/sw)")
+        print("  n         move to named pose (home/overview/nw/ne/se/sw) with speed input")
         print("  o         gripper open")
         print("  c         gripper close")
+        print("  f         gripper set position value (0~1000)")
+        print("  v         set velocity and acc")
         print("  p         print current joints")
         print("  h         help")
         print("  q         quit")
@@ -255,6 +264,51 @@ class JointJogControl(Node):
             msg = res.message if res else "timeout"
             print(f"gripper {label} FAIL: {msg}")
 
+    def set_gripper_position(self, pos):
+        msg = Int32()
+        msg.data = int(pos)
+        self.gripper_pos_pub.publish(msg)
+        print(f"gripper position_cmd -> {pos}")
+
+    def goto_named_pose(self, raw_term):
+        print("\nNamed poses:")
+        for k, (name, _) in NAMED_POSES.items():
+            print(f"  {k}: {name}")
+        with CookedInput(raw_term):
+            key = input("Select (0~5): ").strip()
+            if key not in NAMED_POSES:
+                print("Invalid selection")
+                return
+            name, joints = NAMED_POSES[key]
+            vel_str = input(f"Velocity [{self.vel:.0f}]: ").strip()
+            acc_str = input(f"Acc [{self.acc:.0f}]: ").strip()
+        try:
+            vel = float(vel_str) if vel_str else self.vel
+            acc = float(acc_str) if acc_str else self.acc
+        except ValueError:
+            print("Invalid value")
+            return
+        saved_vel, saved_acc = self.vel, self.acc
+        self.vel, self.acc = vel, acc
+        print(f"Moving to {name} vel={vel:.0f} acc={acc:.0f} -> {[round(v, 2) for v in joints]}")
+        self.target_joints_deg = list(joints)
+        self.send_movej(joints, sync_type=0, wait=True)
+        self.vel, self.acc = saved_vel, saved_acc
+
+    def set_velocity(self, raw_term):
+        with CookedInput(raw_term):
+            vel_str = input(f"\nVelocity [{self.vel:.0f}]: ").strip()
+            acc_str = input(f"Acc [{self.acc:.0f}]: ").strip()
+        try:
+            if vel_str:
+                self.vel = float(vel_str)
+            if acc_str:
+                self.acc = float(acc_str)
+        except ValueError:
+            print("Invalid value")
+            return
+        print(f"vel={self.vel:.0f} acc={self.acc:.0f}")
+
     def handle_key(self, key, raw_term):
         if key in ["1", "2", "3", "4", "5", "6"]:
             if self.current_joints_deg() is not None:
@@ -273,23 +327,25 @@ class JointJogControl(Node):
             self.print_status()
         elif key == "h":
             self.print_help()
-        elif key == "n":
-            with CookedInput(raw_term):
-                print("\nNamed poses:")
-                for k, (name, _) in NAMED_POSES.items():
-                    print(f"  {k}: {name}")
-                choice = input("Select (0-5): ").strip()
-            if choice in NAMED_POSES:
-                name, joints = NAMED_POSES[choice]
-                print(f"Moving to {name}: {[round(v,2) for v in joints]}")
-                self.target_joints_deg = list(joints)
-                self.send_movej(joints, sync_type=0, wait=True)
-            else:
-                print("Invalid choice")
         elif key == "o":
             self.call_gripper(self.cli_gripper_open, "open")
         elif key == "c":
             self.call_gripper(self.cli_gripper_close, "close")
+        elif key == "f":
+            with CookedInput(raw_term):
+                val_str = input("\nGripper position (0~1000): ").strip()
+            try:
+                val = int(val_str)
+                if 0 <= val <= 1000:
+                    self.set_gripper_position(val)
+                else:
+                    print("Range: 0~1000")
+            except ValueError:
+                print("Invalid value")
+        elif key == "v":
+            self.set_velocity(raw_term)
+        elif key == "n":
+            self.goto_named_pose(raw_term)
         elif key == "g":
             with CookedInput(raw_term):
                 text = input("\nEnter 6 joint degrees (comma/space separated): ")

@@ -174,7 +174,13 @@ ee_retreat  = straw - (RETREAT_OFFSET + GRIPPER_LEN) * WALL_UNIT
 | `stem_grasp_offset_from_kp0_m` | +0.010 m | KP0에서 KP2 전체 줄기 방향으로 최대 10mm 이동한 파지 목표 |
 | `grasp_target_base_z_trim_m` | +0.010 m | 줄기 방향 target 생성 후 물리적으로 base +Z 10mm 추가 |
 | `GRASP_Z_BIAS` | 0.000 m | fusion 줄기 방향 보정과 중복되지 않도록 base Z 보정 비활성화 |
-| `GRIPPER_LEN` | 0.160 m | ee link에서 TCP까지의 거리 |
+| legacy ee-to-TCP offset | 0.160 m | 기존 SW 성공 baseline에서 사용한 소프트웨어 보정값. 실제 TCP 길이가 아님 |
+| 실측 flange-to-grasp-center | 약 0.260 m | 2026-06-11 실측. 파츠 끝단 0.270m보다 약 10mm 뒤의 실제 파지 홈 |
+
+> 현재 cuRobo URDF는 `gripper_rh_p12_rn_base`를 `link_6`과 같은 위치에 두고
+> legacy `160mm` offset과 extra advance를 함께 사용한다. 명시적인
+> `grasp_tcp_link` 전환 전까지 현재 baseline은 보존하며, 실제 geometry와의
+> 약 `100mm` 차이는 `docs/tool_geometry_measurement_20260611.md`에 기록했다.
 
 모든 파지 orientation을 벽면 대응 자세로 고정하고, far-right 대상에는 깊은 IK retry를 생략한다. left target에는 home과 같은 safe transfer 자세를 통과하도록 하는 휴리스틱이 들어가 있다.
 

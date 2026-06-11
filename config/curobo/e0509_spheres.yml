@@ -95,6 +95,19 @@ collision_spheres:
     - center: [0.0, 0.0, 0.11]
       radius: 0.026
 
+  # Measured extension-part envelope relative to the grasp center at flange
+  # TOOL Z +0.260m. The centerline spheres are intentionally conservative;
+  # refine lateral finger separation after physical/RViz comparison.
+  grasp_tcp_link:
+    - center: [0.0, 0.0, -0.09]
+      radius: 0.022
+    - center: [0.0, 0.0, -0.06]
+      radius: 0.020
+    - center: [0.0, 0.0, -0.03]
+      radius: 0.018
+    - center: [0.0, 0.0, 0.00]
+      radius: 0.015
+
   attached_object:
     - center: [0.0, 0.0, 0.00]
       radius: -100.0

@@ -306,6 +306,17 @@ extra advance velocity   = 10mm/s
 한다. 길이 오차가 확인되면 추가 MoveLine 보정보다 robot/tool geometry를 먼저
 수정한다.
 
+### 2026-06-11 실측 결과
+
+후속 실측에서 플랜지부터 파츠 끝단까지 약 `270mm`, 실제 파지 홈은 끝단보다
+약 `10mm` 뒤인 약 `260mm`로 확인했다. 플랜지부터 원래 그리퍼 기준점까지는
+약 `160mm`이며, 그리퍼 이후 연장 파츠의 유효 길이는 약 `110~120mm`다.
+
+현재 planner의 legacy offset은 `160mm`이므로 실제 파지 중심보다 약 `100mm`
+짧다. 기존 SW 성공 경로는 이 차이를 `extra advance` 등으로 보정한 baseline이기
+때문에 offset만 즉시 `260mm`로 변경하지 않는다. 상세 전환 계획은
+`docs/tool_geometry_measurement_20260611.md`에 기록했다.
+
 ## Extra 30mm 실기 확인 및 명시적 80mm 검증 모드
 
 ### 11:45 실기 결과

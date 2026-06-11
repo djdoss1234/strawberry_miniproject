@@ -105,29 +105,77 @@ scan pose 복귀
 
 ---
 
-## 5. 미해결 / 다음 세션 작업
+## 5. Place 시퀀스 — 2026-06-11 오후 세션
+
+### 5-1. enable_marker_place_sequence 첫 실행
+
+파라미터:
+```
+enable_marker_place_sequence:=true
+execute_marker_place_release:=true
+measured_tcp_plan_only:=false
+allow_unverified_grasp_place:=true
+```
+
+**문제 1**: `PLACE_GATE_BLOCKED (GRASP_UNVERIFIED)` — read_state 미연결로 place 차단  
+**해결**: `allow_unverified_grasp_place:=true` 추가
+
+**문제 2**: `MARKER_PLACE_RELEASE_DESCEND` 37초 소요, 딸기 35cm 공중 낙하  
+**원인 분석**:
+- TRAY_VIEW_JOINTS(J3=112°)에서 BASE ABS z=627mm 하강 시 arm 재구성 발생 (J3=112°→22°)
+- Doosan MoveLine이 완전 다른 IK solution으로 "플립" — 37초 소요
+- ABOVE_RETREAT도 동일 joints = 실제로 100mm 올라가지 않음
+- 결과: TCP는 명령 좌표에 있지만 arm 자세가 틀려 실제 gripper 위치 오차 35cm
+
+**해결 (이번 세션 마지막 커밋)**:
+- `execute_base_line` (BASE ABS) → **cuRobo Cartesian plan + MoveSplineJoint**
+- RETREAT도 BASE ABS → joint-space plan to TRAY_VIEW_JOINTS
+- `_doosan_zyz_to_wxyz()` helper 추가 (ZYZ Euler → quaternion)
+- scipy import 추가
+
+**아직 실기 검증 안 됨** — 빌드만 완료, 다음 세션에서 테스트 필요
+
+### 5-2. 슬롯 레이아웃 확인
+
+```
+        col0   col1   col2
+row0: [ 00 ] [ 01 ] [ 02 ]   ← TRAY_VIEW_JOINTS TCP 바로 아래
+row1: [ 03 ] [ 04 ] [ 05 ]
+row2: [ 06 ] [ 07 ] [ 08 ]
+row3: [ 09 ] [ 10 ] [ 11 ]
+row4: [ 12 ] [ 13 ] [ 14 ]
+```
+
+slot0부터 순서대로 채우기로 확정 (`_marker_place_slot_idx` 성공마다 +1 자동 증가).
+
+---
+
+## 6. 미해결 / 다음 세션 작업
+
+### ★ 최우선 (다음 세션 첫 번째)
+- [ ] **Place cuRobo 플랜 실기 검증** — 방금 커밋된 코드로 테스트
+  - RELEASE cuRobo plan 성공 여부 확인 (IK 풀리는지)
+  - arm 재구성 없이 slot 위치에 정확히 내려가는지 육안 확인
+  - 로그에서 `MARKER_PLACE_RELEASE_DESCEND cuRobo` 이후 정상 `Plan OK` 확인
 
 ### 필수
-- [ ] `VERIFY_GRASP` 서비스 연결 — 현재 `read_state service unavailable` 로 모든 시도가 `GRASP_UNVERIFIED`
-- [ ] `label_harvest_attempt.py` 로 30회 시도 KPI 수집 시작
-  - `measured_tcp_plan_only_hold` 를 `terminal_events` 에 추가 필요 (현재 누락)
+- [ ] `VERIFY_GRASP` 서비스 연결 — 현재 `read_state service unavailable`로 모든 시도 `GRASP_UNVERIFIED`
+- [ ] KPI 수집 시작 (`label_harvest_attempt.py`) — pick+place 안정화 후
+  - `measured_tcp_plan_only_hold`를 `terminal_events`에 추가 필요
 
 ### 중기
-- [ ] Place 시퀀스 검증 (marker 기반 tray 배치)
 - [ ] 비전 타겟 일관성 확인 (x=-345 vs -401mm 편차 원인)
-- [ ] `GRIPPER_LEN` 실측 재확인 (160mm vs 실제 파지 홈 위치)
+- [ ] `GRIPPER_LEN` 실측 재확인
 
 ### 장기 (NW/NE 대응)
 - [ ] point cloud 기반 잎/줄기 동적 장애물 등록 → cuRobo 경로 계획 정확도 향상
-  - 현재 `Leaf/stem geometry is not in the cuRobo world` 경고 항상 출력
-  - 크레인 접근(`CRANE_Z_OFFSET_M`) 활성화는 이 작업과 함께 재검토
 - [ ] NW/NE 셀 스캔 및 수확 모션 파라미터 재조정
 
 ---
 
-## 6. 알려진 한계
+## 7. 알려진 한계
 
-- `GRASP_UNVERIFIED`: 그리퍼 위치/전류 read_state 서비스 미연결 상태. 성공 여부는 사람 관찰로만 판단.
-- Y-clamp (672mm): FK calibration drift 미보정. raw_Y 적응 진입으로 보상 중이나 근본 해결 아님.
+- `GRASP_UNVERIFIED`: read_state 서비스 미연결. 성공 여부는 사람 관찰로만 판단.
+- Y-clamp (672mm): FK calibration drift 미보정. raw_Y 적응 진입으로 보상 중.
 - 잎/줄기 geometry 없음: 밀도 높은 구역에서 접근 경로 간섭 예측 불가.
 - SW 셀 기준 파라미터: NW/NE는 별도 튜닝 필요.

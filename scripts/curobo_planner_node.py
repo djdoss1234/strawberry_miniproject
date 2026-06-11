@@ -12,6 +12,7 @@ import numpy as np
 import json
 import yaml
 import glob
+from scipy.spatial.transform import Rotation as SciR
 
 import rclpy
 from rclpy.node import Node
@@ -1131,6 +1132,12 @@ class CuroboPlanner(Node):
         )
         return ok
 
+    def _doosan_zyz_to_wxyz(self, rx_deg: float, ry_deg: float, rz_deg: float):
+        """Doosan ZYZ Euler (deg) → quaternion [w, x, y, z] for cuRobo."""
+        r = SciR.from_euler("ZYZ", [rx_deg, ry_deg, rz_deg], degrees=True)
+        xyzw = r.as_quat()
+        return [float(xyzw[3]), float(xyzw[0]), float(xyzw[1]), float(xyzw[2])]
+
     def _nearest_equivalent_joints(self, base_joints_deg):
         """J4/J6를 현재 위치에서 가장 가까운 360° equivalent로 조정."""
         if self.current_joints is None:
@@ -1278,23 +1285,50 @@ class CuroboPlanner(Node):
                 "MARKER_PLACE_BLOCKED: tray-view plan failed; holding fruit")
             return "failed", overview_joints
 
-        if not self.execute_base_line(
-                target["above"], "MARKER_PLACE_ABOVE", vel_mm_s=20.0):
-            self.get_logger().error(
-                "MARKER_PLACE_BLOCKED: above move failed; holding fruit")
+        # ABOVE: cuRobo Cartesian plan (TRAY_VIEW_JOINTS ≈ ABOVE, trivial or minor move)
+        above_pos_m = [v / 1000.0 for v in target["above"][:3]]
+        above_quat = self._doosan_zyz_to_wxyz(*target["above"][3:])
+        self.get_logger().info(
+            f"MARKER_PLACE_ABOVE cuRobo "
+            f"xyz={[round(v, 1) for v in target['above'][:3]]}mm "
+            f"abc={[round(v, 1) for v in target['above'][3:]]}deg")
+        above_plan = self.plan(tray_view_joints, above_pos_m, above_quat)
+        if above_plan is not None:
+            ok_above = self.execute_spline(*above_plan)
+            above_joints = list(above_plan[0][-1].tolist() if ok_above else tray_view_joints)
+        else:
+            self.get_logger().warn(
+                "MARKER_PLACE_ABOVE: cuRobo plan failed, treating tray-view joints as above")
+            ok_above = True
+            above_joints = list(tray_view_joints)
+        if not ok_above:
+            self.get_logger().error("MARKER_PLACE_BLOCKED: above spline exec failed; holding fruit")
             return "failed", tray_view_joints
 
         if not self._execute_marker_place_release:
             self.get_logger().warn(
                 "MARKER_PLACE_PREVIEW_HOLD: above reached; release disabled. "
                 "Inspect clearance before enabling execute_marker_place_release.")
-            return "preview_hold", list(self.current_joints or tray_view_joints)
+            return "preview_hold", list(self.current_joints or above_joints)
 
-        if not self.execute_base_line(
-                target["release"], "MARKER_PLACE_RELEASE_DESCEND", vel_mm_s=12.0):
+        # RELEASE: cuRobo Cartesian plan — avoids kinematic flip caused by BASE ABS
+        release_pos_m = [v / 1000.0 for v in target["release"][:3]]
+        release_quat = self._doosan_zyz_to_wxyz(*target["release"][3:])
+        self.get_logger().info(
+            f"MARKER_PLACE_RELEASE_DESCEND cuRobo "
+            f"xyz={[round(v, 1) for v in target['release'][:3]]}mm "
+            f"abc={[round(v, 1) for v in target['release'][3:]]}deg")
+        release_plan = self.plan(above_joints, release_pos_m, release_quat)
+        if release_plan is None:
             self.get_logger().error(
-                "MARKER_PLACE_BLOCKED: release descend failed; holding fruit")
-            return "failed", list(self.current_joints or tray_view_joints)
+                "MARKER_PLACE_BLOCKED: release cuRobo plan failed; holding fruit")
+            return "failed", list(self.current_joints or above_joints)
+        ok_release = self.execute_spline(*release_plan)
+        if not ok_release:
+            self.get_logger().error(
+                "MARKER_PLACE_BLOCKED: release spline exec failed; holding fruit")
+            return "failed", list(self.current_joints or above_joints)
+        release_joints = list(release_plan[0][-1].tolist())
 
         self.get_logger().info("6 marker place release gripper")
         self.runtime_log.log(
@@ -1303,11 +1337,15 @@ class CuroboPlanner(Node):
         self.call_trigger(self.cli_gripper_open)
         time.sleep(2.0)
 
-        if not self.execute_base_line(
-                target["above"], "MARKER_PLACE_ABOVE_RETREAT", vel_mm_s=12.0):
+        # RETREAT: joint-space back to tray-view (known safe configuration)
+        tray_view_deg_retreat = self._nearest_equivalent_joints(TRAY_VIEW_JOINTS_DEG)
+        ok_retreat, _ = self.plan_to_fixed_joints_pose(
+            release_joints, tray_view_deg_retreat,
+            "MARKER_PLACE_ABOVE_RETREAT", skip_swing_check=True)
+        if not ok_retreat:
             self.get_logger().error(
                 "MARKER_PLACE_RELEASED_BUT_RETREAT_FAILED: holding position")
-            return "failed_after_release", list(self.current_joints or tray_view_joints)
+            return "failed_after_release", list(self.current_joints or release_joints)
 
         self._marker_place_slot_idx += 1
         self.runtime_log.log(

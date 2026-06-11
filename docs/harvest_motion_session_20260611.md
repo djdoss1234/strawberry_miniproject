@@ -332,6 +332,53 @@ curobo_planner_node_20260611T195746-cff71f1b.jsonl
 
 다음 실행도 release-off preview다.
 
+### 5-9. 사선 하향 IK 성공, 실기 자세 품질 실패
+
+run:
+
+```text
+logs/runtime/2026-06-11/
+curobo_planner_node_20260611T200428-57f83553.jsonl
+```
+
+계획 결과:
+
+- selected orientation: `inclined_down_0.25_roll_+0`
+- selected clearance: `100mm`
+- TCP target: 약 `(518.7,-297.3,647.4)mm`
+- TCP radial distance: 약 `0.881m`
+- implied flange distance: 약 `0.790m`
+- cuRobo Cartesian plan: 성공
+- preview hold: 정상 동작하여 release는 실행하지 않음
+
+실기 관찰:
+
+- tray-view에서 갑자기 관절이 크게 회전함
+- end joints:
+  `[-29.2, -21.4, 78.9, 178.8, -46.6, 181.1]deg`
+- 계란판 홈 위의 적절한 배치 자세가 아니라 공중에 떠 있는 잘못된 자세
+- 사용자 관찰 기준으로 place preview 실패
+
+판단:
+
+- `IK 성공`은 수치상 도달 가능한 자세라는 의미일 뿐, 작업에 적합한 place
+  자세나 부드러운 경로를 보장하지 않는다.
+- 자동으로 생성한 사선 orientation은 작업반경 문제는 해결했지만, 관절 branch와
+  실제 계란판 접근 방향을 제어하지 못했다.
+- 현재 자동 orientation sampling 결과를 release까지 연결하면 안 된다.
+
+다음 조치:
+
+1. 계란판 위에서 물리적으로 적절한 **place 전용 기준 관절 자세**를 저속 수동
+   티칭하거나 검증한다.
+2. 해당 자세를 기준으로 slot0 ABOVE pose와 orientation을 고정한다.
+3. 이후 marker 이동량만 기준 자세에 합성한다.
+4. 후보 선택 시 IK 성공 외에 기준 관절 자세 대비 joint delta/path quality를
+   비용 또는 거부 조건으로 적용한다.
+5. 위 검증 전까지 `execute_marker_place_release:=false`를 유지한다.
+
+이 run은 place 성공으로 기록하지 않는다.
+
 ### 5-2. 슬롯 레이아웃 확인
 
 ```
@@ -350,12 +397,14 @@ slot0부터 순서대로 채우기로 확정 (`_marker_place_slot_idx` 성공마
 ## 6. 미해결 / 다음 세션 작업
 
 ### ★ 최우선 (다음 세션 첫 번째)
-- [ ] **Place cuRobo 플랜 실기 검증** — 방금 커밋된 코드로 테스트
-  - RELEASE cuRobo plan 성공 여부 확인 (IK 풀리는지)
-  - arm 재구성 없이 slot 위치에 정확히 내려가는지 육안 확인
-  - 로그에서 `MARKER_PLACE_RELEASE_DESCEND cuRobo` 이후 정상 `Plan OK` 확인
+- [ ] **Place 전용 기준 관절 자세 티칭/검증**
+  - 자동 orientation sampling 실기 재실행 중단
+  - 계란판 홈 위에서 파츠가 안전하게 배치 가능한 기준 자세를 저속으로 확보
+  - 기준 자세의 joints, TCP, 사진을 기록
+  - 이후 marker slot 이동량과 결합하고 joint delta/path quality 제한 추가
 
 ### 필수
+- [ ] place 기준 자세 확보 전까지 `execute_marker_place_release:=false` 유지
 - [ ] `VERIFY_GRASP` 서비스 연결 — 현재 `read_state service unavailable`로 모든 시도 `GRASP_UNVERIFIED`
 - [ ] KPI 수집 시작 (`label_harvest_attempt.py`) — pick+place 안정화 후
   - `measured_tcp_plan_only_hold`를 `terminal_events`에 추가 필요
@@ -376,3 +425,5 @@ slot0부터 순서대로 채우기로 확정 (`_marker_place_slot_idx` 성공마
 - Y-clamp (672mm): FK calibration drift 미보정. raw_Y 적응 진입으로 보상 중.
 - 잎/줄기 geometry 없음: 밀도 높은 구역에서 접근 경로 간섭 예측 불가.
 - SW 셀 기준 파라미터: NW/NE는 별도 튜닝 필요.
+- 자동 marker-place orientation sampling은 IK 성공 경로가 실기상 부적절한 자세를
+  선택했으므로 현재 실기 사용 금지.

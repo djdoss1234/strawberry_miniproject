@@ -5,7 +5,6 @@ from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 
@@ -40,10 +39,6 @@ def generate_launch_description():
         ' color:=', LaunchConfiguration('color'),
         ' update_rate:=100',
     ])
-    robot_description = ParameterValue(
-        robot_description_content,
-        value_type=str,
-    )
 
     robot_controllers = [
         PathJoinSubstitution([
@@ -84,7 +79,7 @@ def generate_launch_description():
         package="controller_manager",
         executable="ros2_control_node",
         namespace=LaunchConfiguration('name'),
-        parameters=[{"robot_description": robot_description}] + robot_controllers,
+        parameters=[{"robot_description": robot_description_content}] + robot_controllers,
         output="both",
     )
 
@@ -95,7 +90,7 @@ def generate_launch_description():
         name='robot_state_publisher',
         namespace=LaunchConfiguration('name'),
         output='both',
-        parameters=[{'robot_description': robot_description}],
+        parameters=[{'robot_description': robot_description_content}],
     )
 
     # Gripper Joint State Publisher

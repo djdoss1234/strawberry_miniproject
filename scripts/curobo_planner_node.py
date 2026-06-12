@@ -103,6 +103,8 @@ DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 
 GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (스캔 이동 중 미리 설정됨)
 GRIPPER_PLACE_RELEASE_POS   = 600  # place 시 완전 개방 대신 제한 개방
+TAUGHT_SLOT0_ABOVE_CLEARANCE_M = 0.120  # release 자세 바로 위 수직 진입 여유
+TAUGHT_SLOT0_VERTICAL_VEL_MM_S = 20.0   # 계란판 근처 하강/상승 속도
 
 # ── 파지 검증 ─────────────────────────────────────────────────────────────────
 # RH-P12-RN-A: 0=fully open, 700=fully closed
@@ -1411,31 +1413,51 @@ class CuroboPlanner(Node):
         }
 
     def _execute_taught_slot0_place_reference_after_retreat(self, retreat_joints):
-        """Pick retreat 자세에서 검증된 고정 slot0 자세로 직접 이동한다."""
+        """검증된 slot0 release 자세 위로 이동한 뒤 수직 하강·상승한다."""
         self.get_logger().warn(
             "TAUGHT_SLOT0_PLACE_REFERENCE active: fixed tray pose only; "
             "marker localization is bypassed")
 
         reference_deg = self._nearest_equivalent_joints(
             TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG)
-        ok, reference_joints = self.plan_to_fixed_joints_pose(
-            retreat_joints, reference_deg, "taught slot0 direct place reference",
-            max_joint_delta_deg=MAX_TAUGHT_PLACE_TRANSFER_JOINT_DELTA_DEG)
-        if not ok:
+        reference_rad = np.deg2rad(reference_deg).tolist()
+        release_fk_pos_m, release_fk_quat = self._curobo_fk_ee_pose(reference_rad)
+        above_pos_m = list(release_fk_pos_m)
+        above_pos_m[2] += TAUGHT_SLOT0_ABOVE_CLEARANCE_M
+        self.get_logger().info(
+            "TAUGHT_SLOT0_ABOVE auto-generated from release FK: "
+            f"clearance={TAUGHT_SLOT0_ABOVE_CLEARANCE_M*1000:.0f}mm "
+            f"goal_mm={[round(v * 1000, 1) for v in above_pos_m]}")
+        above_plan = self.plan(
+            retreat_joints, above_pos_m, release_fk_quat,
+            num_ik_seeds=64, max_attempts=3, timeout_sec=2.0)
+        if above_plan is None or not self.execute_spline(*above_plan):
             self.get_logger().error(
-                "TAUGHT_SLOT0_PLACE_BLOCKED: direct reference plan failed; holding fruit")
+                "TAUGHT_SLOT0_PLACE_BLOCKED: above plan failed; holding fruit")
             return "failed", retreat_joints
+        above_joints = list(above_plan[0][-1].tolist())
 
         self.runtime_log.log(
-            "taught_slot0_place_reference_reached",
+            "taught_slot0_place_above_reached",
             release_enabled=self._execute_marker_place_release,
             reference_joints_deg=reference_deg,
             reference_posx_mm_deg=TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG,
+            above_pos_m=above_pos_m,
+            above_clearance_m=TAUGHT_SLOT0_ABOVE_CLEARANCE_M,
         )
         if not self._execute_marker_place_release:
             self.get_logger().warn(
-                "TAUGHT_SLOT0_PLACE_PREVIEW_HOLD: reference reached; release disabled")
-            return "preview_hold", list(self.current_joints or reference_joints)
+                "TAUGHT_SLOT0_PLACE_PREVIEW_HOLD: above reached; release disabled")
+            return "preview_hold", list(self.current_joints or above_joints)
+
+        if not self.execute_base_z_relative(
+                -TAUGHT_SLOT0_ABOVE_CLEARANCE_M,
+                "TAUGHT_SLOT0_RELEASE_DESCEND",
+                TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
+            self.get_logger().error(
+                "TAUGHT_SLOT0_PLACE_BLOCKED: vertical release descend failed; "
+                "holding fruit")
+            return "failed", list(self.current_joints or above_joints)
 
         self.get_logger().warn(
             f"TAUGHT_SLOT0_PLACE_RELEASE: position_cmd={GRIPPER_PLACE_RELEASE_POS} "
@@ -1449,6 +1471,14 @@ class CuroboPlanner(Node):
         self.gripper_pos_pub.publish(release_msg)
         time.sleep(2.0)
 
+        if not self.execute_base_z_relative(
+                TAUGHT_SLOT0_ABOVE_CLEARANCE_M,
+                "TAUGHT_SLOT0_RELEASE_ASCEND",
+                TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
+            self.get_logger().error(
+                "TAUGHT_SLOT0_RELEASED_BUT_ASCEND_FAILED: holding position")
+            return "failed_after_release", list(self.current_joints or above_joints)
+
         self._marker_place_slot_idx = 1
         self.runtime_log.log(
             "marker_place_complete",
@@ -1456,7 +1486,7 @@ class CuroboPlanner(Node):
             slot_index=0,
             source="taught_slot0_place_reference",
         )
-        return "success", list(self.current_joints or reference_joints)
+        return "success", list(self.current_joints or above_joints)
 
     def _execute_marker_place_after_retreat(self, retreat_joints):
         """Marker-derived place. Release 승인 전에는 above에서 정지한다."""

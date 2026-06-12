@@ -280,3 +280,12 @@ branch로 사용하고, marker 목표의 위치 변화만 제한적으로 반영
 2026-06-12 변경: 고정 slot0 자세를 사용할 때는 불필요한 overview/tray-view
 경유를 제거했다. 현재 경로는 pick retreat 자세에서 slot0 기준 자세로 직접
 cuRobo joint-space planning 후 이동하며, release 후에도 tray-view를 경유하지 않는다.
+
+### 2026-06-12 파지 목표 정리
+
+- 물리적 목표: KP0 바로 위 `10~20mm`의 가는 줄기 부분
+- 꺾인 줄기: 전체 `KP0 -> KP2` 직선이 아니라 국소 `KP0 -> KP1` 방향 사용
+- fusion의 base-Z trim `+10mm`와 planner의 `GRASP_Z_BIAS +20mm`가 중복 적용될
+  가능성이 확인됨
+- 다음 실기는 place 비활성 상태에서 파지 위치를 먼저 확인하고, 목표가 높으면
+  planner 측 `GRASP_Z_BIAS`를 우선 제거/파라미터화한다

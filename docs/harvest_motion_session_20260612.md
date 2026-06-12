@@ -79,6 +79,64 @@ pick retreat
 
 Place는 이 파지 정확도 검증 동안 비활성으로 실행한다.
 
+## Current harvest sequence and intended grasp point
+
+### Current harvest sequence
+
+```text
+SW taught scan pose
+ -> seg model ripe filtering
+ -> pose model KP0/KP1/KP2 detection
+ -> stable target tracking and selection
+ -> local stem grasp target generation
+ -> cuRobo pre-approach planning
+ -> TOOL +Z straight final approach
+ -> gripper close
+ -> BASE -Z 40mm detach pull
+ -> TOOL -Z straight reverse retreat
+ -> place disabled: return to SW pick-start scan pose
+```
+
+### Keypoint meaning
+
+```text
+fruit
+  |
+ KP0: stem base nearest to fruit
+  |
+ KP1: local stem midpoint immediately above KP0
+   \
+   KP2: farther stem direction reference
+```
+
+The intended physical grasp point is the thin stem approximately `10~20mm`
+above KP0. The stem alone should enter the center between both extension parts.
+The gripper must not clamp the fruit body or the wide calyx/leaf area.
+
+For bent stems, the target must follow the local `KP0 -> KP1` direction rather
+than the full `KP0 -> KP2` chord.
+
+### Z-bias verification required
+
+The fusion node currently generates a KP-based target and then adds:
+
+- `grasp_target_base_z_trim_m = +10mm`
+
+The planner subsequently adds:
+
+- `GRASP_Z_BIAS = +20mm`
+
+Therefore, the final planner target may be shifted higher than the intended
+local stem point by a combined base-Z correction. This is a confirmed code-path
+observation, but the physical effect has not yet been isolated experimentally.
+
+Next validation:
+
+1. Test the new KP0->KP1 local target with place disabled.
+2. Compare the visual grasp point against KP0+10~20mm.
+3. If the target is too high, remove or parameterize the planner-side
+   `GRASP_Z_BIAS` instead of changing both layers simultaneously.
+
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 
 ## Bringup YAML parsing incident

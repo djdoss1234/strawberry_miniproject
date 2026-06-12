@@ -114,6 +114,12 @@ GRASP_VERIFY_TIMEOUT_SEC       = 5.0   # read_position 서비스 타임아웃 (h
 HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
 OVERVIEW_JOINTS_DEG = [87.98, -94.92, 129.89, 175.94, -31.34, 93.42]  # 스캔 기준 포즈
 TRAY_VIEW_JOINTS_DEG = [-0.02, -2.41, 111.87, 175.94, -31.34, 93.42]
+TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG = [
+    5.34, 3.05, 124.87, 179.46, -3.46, 93.51,
+]
+TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG = [
+    441.65, 41.20, 233.76, 5.30, 131.37, -87.05,
+]
 DEFAULT_TRAY_CELLS_GLOB = os.path.expanduser(
     "~/Downloads/share_tray/output/tray_cells_*.json")
 
@@ -288,6 +294,7 @@ class CuroboPlanner(Node):
 
         self.declare_parameter("enable_marker_place_sequence", False)
         self.declare_parameter("execute_marker_place_release", False)
+        self.declare_parameter("use_taught_slot0_place_reference", False)
         self.declare_parameter("allow_unverified_grasp_place", False)
         self.declare_parameter("grasp_current_contact_threshold_raw", -1)
         self.declare_parameter("tray_cells_json", "")
@@ -303,6 +310,8 @@ class CuroboPlanner(Node):
             self.get_parameter("enable_marker_place_sequence").value)
         self._execute_marker_place_release = bool(
             self.get_parameter("execute_marker_place_release").value)
+        self._use_taught_slot0_place_reference = bool(
+            self.get_parameter("use_taught_slot0_place_reference").value)
         self._allow_unverified_grasp_place = bool(
             self.get_parameter("allow_unverified_grasp_place").value)
         self._grasp_current_contact_threshold_raw = int(
@@ -384,6 +393,7 @@ class CuroboPlanner(Node):
             tcp_model_shortfall_m=TCP_MODEL_SHORTFALL_M,
             enable_marker_place=self._enable_marker_place,
             execute_marker_place_release=self._execute_marker_place_release,
+            use_taught_slot0_place_reference=self._use_taught_slot0_place_reference,
             allow_unverified_grasp_place=self._allow_unverified_grasp_place,
             grasp_current_contact_threshold_raw=self._grasp_current_contact_threshold_raw,
             marker_place_max_age_sec=self._marker_place_max_age_sec,
@@ -425,6 +435,7 @@ class CuroboPlanner(Node):
         self.get_logger().info(
             f"  marker place: enabled={self._enable_marker_place} "
             f"release={self._execute_marker_place_release} "
+            f"taught_slot0_reference={self._use_taught_slot0_place_reference} "
             f"allow_unverified_grasp={self._allow_unverified_grasp_place} "
             f"max_age={self._marker_place_max_age_sec:.0f}s")
 
@@ -1346,8 +1357,78 @@ class CuroboPlanner(Node):
             "contact_mm": cell.get("position_contact_mm"),
         }
 
+    def _execute_taught_slot0_place_reference_after_retreat(self, retreat_joints):
+        """검증된 slot0 관절 branch로 이동한다. 첫 실기는 release-off preview."""
+        self.get_logger().warn(
+            "TAUGHT_SLOT0_PLACE_REFERENCE active: fixed tray pose only; "
+            "marker localization is bypassed")
+        overview_deg = self.overview_joints_near_current()
+        ok, overview_joints = self.plan_to_fixed_joints_pose(
+            retreat_joints, overview_deg, "taught slot0 transfer overview",
+            skip_swing_check=True)
+        if not ok:
+            self.get_logger().error(
+                "TAUGHT_SLOT0_PLACE_BLOCKED: overview plan failed; holding fruit")
+            return "failed", retreat_joints
+
+        tray_view_deg = self._nearest_equivalent_joints(TRAY_VIEW_JOINTS_DEG)
+        ok, tray_view_joints = self.plan_to_fixed_joints_pose(
+            overview_joints, tray_view_deg, "taught slot0 tray view",
+            skip_swing_check=True)
+        if not ok:
+            self.get_logger().error(
+                "TAUGHT_SLOT0_PLACE_BLOCKED: tray-view plan failed; holding fruit")
+            return "failed", overview_joints
+
+        reference_deg = self._nearest_equivalent_joints(
+            TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG)
+        ok, reference_joints = self.plan_to_fixed_joints_pose(
+            tray_view_joints, reference_deg, "taught slot0 place reference")
+        if not ok:
+            self.get_logger().error(
+                "TAUGHT_SLOT0_PLACE_BLOCKED: reference plan failed; holding fruit")
+            return "failed", tray_view_joints
+
+        self.runtime_log.log(
+            "taught_slot0_place_reference_reached",
+            release_enabled=self._execute_marker_place_release,
+            reference_joints_deg=reference_deg,
+            reference_posx_mm_deg=TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG,
+        )
+        if not self._execute_marker_place_release:
+            self.get_logger().warn(
+                "TAUGHT_SLOT0_PLACE_PREVIEW_HOLD: reference reached; release disabled")
+            return "preview_hold", list(self.current_joints or reference_joints)
+
+        self.get_logger().warn(
+            "TAUGHT_SLOT0_PLACE_RELEASE: opening gripper at manually verified reference")
+        self.runtime_log.log(
+            "gripper_command", command="release", slot_index=0,
+            source="taught_slot0_place_reference")
+        self.call_trigger(self.cli_gripper_open)
+        time.sleep(2.0)
+
+        ok, tray_view_joints = self.plan_to_fixed_joints_pose(
+            reference_joints, tray_view_deg, "taught slot0 tray-view return")
+        if not ok:
+            self.get_logger().error(
+                "TAUGHT_SLOT0_PLACE_RELEASED_BUT_RETREAT_FAILED: holding position")
+            return "failed_after_release", list(self.current_joints or reference_joints)
+        self._marker_place_slot_idx = 1
+        self.runtime_log.log(
+            "marker_place_complete",
+            result_code="PLACE_SEQUENCE_COMPLETE_UNVERIFIED",
+            slot_index=0,
+            source="taught_slot0_place_reference",
+        )
+        return "complete", tray_view_joints
+
     def _execute_marker_place_after_retreat(self, retreat_joints):
         """Marker-derived place. Release 승인 전에는 above에서 정지한다."""
+        if self._use_taught_slot0_place_reference and self._marker_place_slot_idx == 0:
+            return self._execute_taught_slot0_place_reference_after_retreat(
+                retreat_joints)
+
         target = self._load_marker_place_target()
         if target is None:
             return "skip", retreat_joints   # tray 없음/stale → soft skip, hold 없음

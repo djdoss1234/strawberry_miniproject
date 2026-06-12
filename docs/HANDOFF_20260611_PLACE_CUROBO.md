@@ -260,3 +260,19 @@ row4: [ 12 ] [ 13 ] [ 14 ]
 6. KPI 수집 (`label_harvest_attempt.py`) — pick+place 안정 후
 7. 비전 타겟 일관성 (x=-345 vs -401mm 편차)
 8. NW/NE 셀 파라미터 조정
+
+---
+
+## 8. 2026-06-12 slot0 수동 기준 자세 확보
+
+자동 place orientation sampling의 부적절한 관절 branch를 대체할 place 전용
+기준 후보를 사용자가 직접 확인했다.
+
+```yaml
+joints_deg: [5.34, 3.05, 124.87, 179.46, -3.46, 93.51]
+posx_mm_deg: [441.65, 41.20, 233.76, 5.30, 131.37, -87.05]
+```
+
+아직 `above` 또는 `release`로 분류하지 않은 기준 후보이며 자동 release에는
+연결하지 않는다. 다음 작업은 빈 그리퍼 저속 검증 후 이 자세를 preferred joint
+branch로 사용하고, marker 목표의 위치 변화만 제한적으로 반영하는 것이다.

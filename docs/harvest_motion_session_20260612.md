@@ -37,16 +37,20 @@ classification: unverified_place_reference
 `use_taught_slot0_place_reference:=true`일 때 기존 임의 orientation sampling을
 우회하고 다음 고정 경로를 사용하도록 구현했다.
 
+첫 preview 이후 사용자가 overview와 tray-view 경유 중 계란판에 딸기가 끌리는
+문제를 확인했다. 고정 slot0 자세에는 marker 촬영 자세가 필요하지 않으므로
+경유점을 제거했다.
+
 ```text
 pick retreat
- -> overview
- -> tray-view
- -> taught slot0 place reference
- -> preview hold 또는 명시 승인 시 gripper release
+ -> taught slot0 place reference 직행
+ -> preview hold 또는 명시 승인 시 즉시 gripper release
+ -> pick-start scan pose 직접 복귀
 ```
 
-tray-view에서 기준 자세까지 J4 변화는 `175.94° -> 179.46°`로 작다. 따라서
-기존 자동 후보에서 발생한 J4 급회전 branch를 사용하지 않는다.
+직행 경로는 cuRobo joint-space planning과 기존 swing/operational-limit 검사를
+통과한 경우에만 실행한다. 놓은 직후 tray-view로 복귀하지 않아 계란판 근처에서
+딸기를 끄는 동작도 제거했다.
 
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 

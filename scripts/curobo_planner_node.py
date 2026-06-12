@@ -1358,36 +1358,19 @@ class CuroboPlanner(Node):
         }
 
     def _execute_taught_slot0_place_reference_after_retreat(self, retreat_joints):
-        """검증된 slot0 관절 branch로 이동한다. 첫 실기는 release-off preview."""
+        """Pick retreat 자세에서 검증된 고정 slot0 자세로 직접 이동한다."""
         self.get_logger().warn(
             "TAUGHT_SLOT0_PLACE_REFERENCE active: fixed tray pose only; "
             "marker localization is bypassed")
-        overview_deg = self.overview_joints_near_current()
-        ok, overview_joints = self.plan_to_fixed_joints_pose(
-            retreat_joints, overview_deg, "taught slot0 transfer overview",
-            skip_swing_check=True)
-        if not ok:
-            self.get_logger().error(
-                "TAUGHT_SLOT0_PLACE_BLOCKED: overview plan failed; holding fruit")
-            return "failed", retreat_joints
-
-        tray_view_deg = self._nearest_equivalent_joints(TRAY_VIEW_JOINTS_DEG)
-        ok, tray_view_joints = self.plan_to_fixed_joints_pose(
-            overview_joints, tray_view_deg, "taught slot0 tray view",
-            skip_swing_check=True)
-        if not ok:
-            self.get_logger().error(
-                "TAUGHT_SLOT0_PLACE_BLOCKED: tray-view plan failed; holding fruit")
-            return "failed", overview_joints
 
         reference_deg = self._nearest_equivalent_joints(
             TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG)
         ok, reference_joints = self.plan_to_fixed_joints_pose(
-            tray_view_joints, reference_deg, "taught slot0 place reference")
+            retreat_joints, reference_deg, "taught slot0 direct place reference")
         if not ok:
             self.get_logger().error(
-                "TAUGHT_SLOT0_PLACE_BLOCKED: reference plan failed; holding fruit")
-            return "failed", tray_view_joints
+                "TAUGHT_SLOT0_PLACE_BLOCKED: direct reference plan failed; holding fruit")
+            return "failed", retreat_joints
 
         self.runtime_log.log(
             "taught_slot0_place_reference_reached",
@@ -1408,12 +1391,6 @@ class CuroboPlanner(Node):
         self.call_trigger(self.cli_gripper_open)
         time.sleep(2.0)
 
-        ok, tray_view_joints = self.plan_to_fixed_joints_pose(
-            reference_joints, tray_view_deg, "taught slot0 tray-view return")
-        if not ok:
-            self.get_logger().error(
-                "TAUGHT_SLOT0_PLACE_RELEASED_BUT_RETREAT_FAILED: holding position")
-            return "failed_after_release", list(self.current_joints or reference_joints)
         self._marker_place_slot_idx = 1
         self.runtime_log.log(
             "marker_place_complete",
@@ -1421,7 +1398,7 @@ class CuroboPlanner(Node):
             slot_index=0,
             source="taught_slot0_place_reference",
         )
-        return "complete", tray_view_joints
+        return "success", list(self.current_joints or reference_joints)
 
     def _execute_marker_place_after_retreat(self, retreat_joints):
         """Marker-derived place. Release 승인 전에는 above에서 정지한다."""

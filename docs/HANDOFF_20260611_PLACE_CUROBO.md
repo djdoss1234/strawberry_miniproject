@@ -276,3 +276,7 @@ posx_mm_deg: [441.65, 41.20, 233.76, 5.30, 131.37, -87.05]
 아직 `above` 또는 `release`로 분류하지 않은 기준 후보이며 자동 release에는
 연결하지 않는다. 다음 작업은 빈 그리퍼 저속 검증 후 이 자세를 preferred joint
 branch로 사용하고, marker 목표의 위치 변화만 제한적으로 반영하는 것이다.
+
+2026-06-12 변경: 고정 slot0 자세를 사용할 때는 불필요한 overview/tray-view
+경유를 제거했다. 현재 경로는 pick retreat 자세에서 slot0 기준 자세로 직접
+cuRobo joint-space planning 후 이동하며, release 후에도 tray-view를 경유하지 않는다.

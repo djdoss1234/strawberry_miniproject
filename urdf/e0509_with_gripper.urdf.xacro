@@ -44,7 +44,7 @@
     <child link="gripper_rh_p12_rn_base"/>
   </joint>
 
-  <!-- Measured effective grasp center: 10mm behind the 270mm part tips. -->
+  <!-- Measured effective grasp center, 10mm behind the 270mm part tips. -->
   <link name="grasp_tcp_link"/>
   <joint name="grasp_tcp_joint" type="fixed">
     <origin xyz="0 0 0.260" rpy="0 0 0"/>

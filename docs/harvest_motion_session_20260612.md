@@ -137,6 +137,27 @@ Next validation:
 3. If the target is too high, remove or parameterize the planner-side
    `GRASP_Z_BIAS` instead of changing both layers simultaneously.
 
+## Intermittent gripper close failure diagnosis
+
+실제 파지 위치에 정확히 도달했지만 간헐적으로 그리퍼가 닫히지 않는 현상이
+관찰되었다. 기존 planner는 `/dsr01/gripper/close` Trigger를 호출한 뒤 응답의
+성공 여부, timeout, 오류 메시지를 확인하지 않았다.
+
+또한 gripper service 내부의 flange serial open/write 재시도는 10초 이상 걸릴 수
+있지만 planner는 10초 후 대기를 종료했다. 따라서 close가 실패하거나 아직 처리
+중이어도 detach/retreat 단계로 진행할 수 있었다.
+
+수정:
+
+- Trigger service 응답의 `success`와 메시지를 JSONL에 기록한다.
+- close 응답 대기를 20초로 늘리고 실패 시 1회 재시도한다.
+- 두 번 모두 실패하면 BASE -Z detach를 실행하지 않는다.
+- close 실패 시 접근 경로를 직선 역진하고 `GRIPPER_CLOSE_FAILED`로 기록한다.
+- read-state 대기 시간도 20초로 늘렸다.
+
+향후 로그에서 `GRIPPER_CLOSE success`와 `trigger_result`를 확인하면, 실제 close
+명령 성공 여부와 이후 read-state 실패를 구분할 수 있다.
+
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 
 ## Bringup YAML parsing incident

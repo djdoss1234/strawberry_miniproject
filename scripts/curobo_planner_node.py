@@ -108,7 +108,7 @@ GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (스캔 이동 중 미리
 # 줄기가 잡히면 jaw가 중간에 멈춤(예: ~600~650). 아무것도 없으면 700까지 닫힘.
 # 임계값 이상이면 GRASP_EMPTY 판정.
 GRASP_EMPTY_POSITION_THRESHOLD = 665   # pos >= 665 → fully closed → nothing grabbed
-GRASP_VERIFY_TIMEOUT_SEC       = 5.0   # read_position 서비스 타임아웃 (hardware read ~1.5s 포함)
+GRASP_VERIFY_TIMEOUT_SEC       = 20.0  # flange serial open/read 재시도까지 포함
 
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
@@ -623,13 +623,40 @@ class CuroboPlanner(Node):
             return MEASURED_TCP_GRASP_QUAT_RETRY_VARIANTS
         return GRASP_QUAT_RETRY_VARIANTS
 
-    def call_trigger(self, client):
-        if not client.wait_for_service(timeout_sec=3.0):
-            return
-        future = client.call_async(Trigger.Request())
-        t0 = time.time()
-        while not future.done() and (time.time() - t0) < 10.0:
-            time.sleep(0.1)
+    def call_trigger(self, client, label="trigger", timeout_sec=20.0, retries=0):
+        """Trigger 응답을 확인한다. 그리퍼 serial 명령은 10초 이상 걸릴 수 있다."""
+        for attempt in range(retries + 1):
+            if not client.wait_for_service(timeout_sec=3.0):
+                reason = "service unavailable"
+            else:
+                future = client.call_async(Trigger.Request())
+                t0 = time.time()
+                while not future.done() and (time.time() - t0) < timeout_sec:
+                    time.sleep(0.1)
+                if not future.done():
+                    reason = f"timeout>{timeout_sec:.0f}s"
+                else:
+                    response = future.result()
+                    if response is not None and response.success:
+                        self.get_logger().info(
+                            f"{label} success: {response.message}")
+                        self.runtime_log.log(
+                            "trigger_result", label=label, success=True,
+                            attempt=attempt + 1, message=response.message)
+                        return True
+                    reason = (
+                        response.message
+                        if response is not None
+                        else "empty response"
+                    )
+            self.get_logger().error(
+                f"{label} failed attempt {attempt + 1}/{retries + 1}: {reason}")
+            self.runtime_log.log(
+                "trigger_result", label=label, success=False,
+                attempt=attempt + 1, reason=reason)
+            if attempt < retries:
+                time.sleep(0.5)
+        return False
 
     def _verify_grasp(self):
         """Position/current feedback로 자동 접촉 판정. 사람 라벨은 정확도 검증에 유지한다."""
@@ -1985,7 +2012,34 @@ class CuroboPlanner(Node):
         # 3. 그리퍼 닫기
         self.get_logger().info("3 close gripper")
         self.runtime_log.log("gripper_command", command="close")
-        self.call_trigger(self.cli_gripper_close)
+        close_ok = self.call_trigger(
+            self.cli_gripper_close,
+            label="GRIPPER_CLOSE",
+            timeout_sec=20.0,
+            retries=1,
+        )
+        if not close_ok:
+            self.get_logger().error(
+                "ABORT: gripper close failed twice — skip detach and retreat straight")
+            self.runtime_log.log(
+                "pick_sequence_stopped",
+                result_code="GRIPPER_CLOSE_FAILED",
+                action="straight_retreat_without_detach",
+            )
+            retreat_distance_m = final_approach_distance + extra_advance_m
+            retreat_ok = self.execute_tool_z_line(
+                -retreat_distance_m,
+                motion_label="CLOSE_FAIL_RETREAT",
+                vel_mm_s=RETREAT_VEL_MM_S,
+                acc_mm_s2=RETREAT_ACC_MM_S2,
+            )
+            self._clear_neighbor_obstacles()
+            if retreat_ok:
+                self._reset_gripper()
+                self.pick_complete_pub.publish(Empty())
+            else:
+                self._hold_pick_sequence("gripper_close_failed_retreat_failed")
+            return
         time.sleep(1.5)
 
         # 3b. VERIFY_GRASP — 실제 그리퍼 위치를 읽어 파지 여부 판정

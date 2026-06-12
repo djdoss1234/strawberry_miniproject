@@ -300,6 +300,7 @@ class CuroboPlanner(Node):
         self.declare_parameter("enable_marker_place_sequence", False)
         self.declare_parameter("execute_marker_place_release", False)
         self.declare_parameter("use_taught_slot0_place_reference", False)
+        self.declare_parameter("hold_after_taught_slot0_place", True)
         self.declare_parameter("allow_unverified_grasp_place", False)
         self.declare_parameter("grasp_current_contact_threshold_raw", -1)
         self.declare_parameter("tray_cells_json", "")
@@ -317,6 +318,8 @@ class CuroboPlanner(Node):
             self.get_parameter("execute_marker_place_release").value)
         self._use_taught_slot0_place_reference = bool(
             self.get_parameter("use_taught_slot0_place_reference").value)
+        self._hold_after_taught_slot0_place = bool(
+            self.get_parameter("hold_after_taught_slot0_place").value)
         self._allow_unverified_grasp_place = bool(
             self.get_parameter("allow_unverified_grasp_place").value)
         self._grasp_current_contact_threshold_raw = int(
@@ -399,6 +402,7 @@ class CuroboPlanner(Node):
             enable_marker_place=self._enable_marker_place,
             execute_marker_place_release=self._execute_marker_place_release,
             use_taught_slot0_place_reference=self._use_taught_slot0_place_reference,
+            hold_after_taught_slot0_place=self._hold_after_taught_slot0_place,
             allow_unverified_grasp_place=self._allow_unverified_grasp_place,
             grasp_current_contact_threshold_raw=self._grasp_current_contact_threshold_raw,
             marker_place_max_age_sec=self._marker_place_max_age_sec,
@@ -441,6 +445,7 @@ class CuroboPlanner(Node):
             f"  marker place: enabled={self._enable_marker_place} "
             f"release={self._execute_marker_place_release} "
             f"taught_slot0_reference={self._use_taught_slot0_place_reference} "
+            f"hold_after_slot0={self._hold_after_taught_slot0_place} "
             f"allow_unverified_grasp={self._allow_unverified_grasp_place} "
             f"max_age={self._marker_place_max_age_sec:.0f}s")
 
@@ -2131,6 +2136,21 @@ class CuroboPlanner(Node):
                 retreat_joints)
             if place_status == "success":
                 return_start_joints = place_joints
+                if (
+                    self._use_taught_slot0_place_reference
+                    and self._hold_after_taught_slot0_place
+                ):
+                    self._clear_neighbor_obstacles()
+                    self.runtime_log.log(
+                        "pick_sequence_stopped",
+                        result_code="TAUGHT_SLOT0_PLACE_COMPLETE_HOLD",
+                        current_joints_rad=self.current_joints,
+                    )
+                    self.get_logger().warn(
+                        "TAUGHT_SLOT0_PLACE_COMPLETE_HOLD: slot0 release complete; "
+                        "automatic next pick blocked until planner restart")
+                    self._hold_pick_sequence("taught_slot0_place_complete")
+                    return
             elif place_status == "skip":
                 # tray 없음/stale — place 생략, scan 복귀
                 self.get_logger().warn("PLACE_SKIPPED: tray unavailable; returning to scan")

@@ -158,6 +158,20 @@ Next validation:
 향후 로그에서 `GRIPPER_CLOSE success`와 `trigger_result`를 확인하면, 실제 close
 명령 성공 여부와 이후 read-state 실패를 구분할 수 있다.
 
+## Slot0 single-shot place validation
+
+개별 딸기 pick이 대체로 가능해진 뒤 고정 slot0 실제 place 검증을 재개한다.
+현재 검증된 고정 place 자세는 slot0 하나뿐이다. slot0 배치 성공 후
+`/pick_complete`를 발행하면 다음 딸기를 수확한 뒤 검증되지 않은 marker slot1
+경로로 넘어갈 수 있으므로, 기본적으로 첫 place 직후 자동 시퀀스를 잠근다.
+
+```text
+pick -> detach -> retreat -> taught slot0 direct transfer -> release -> HOLD
+```
+
+`hold_after_taught_slot0_place:=true`가 기본값이며, slot1 이후 경로가 검증되기
+전에는 끄지 않는다.
+
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 
 ## Bringup YAML parsing incident

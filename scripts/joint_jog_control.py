@@ -12,7 +12,7 @@ Keys:
   c         gripper close
   f         gripper set position value
   v         set velocity/acc
-  p         print current joints
+  p         print current joints + BASE TCP pose
   h         help
   q         quit
 """
@@ -29,7 +29,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Int32
 from std_srvs.srv import Trigger
-from dsr_msgs2.srv import GetRobotMode, GetRobotState, MoveJoint
+from dsr_msgs2.srv import GetCurrentPosx, GetRobotMode, GetRobotState, MoveJoint
 
 
 JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
@@ -101,6 +101,8 @@ class JointJogControl(Node):
         self.cli_movej = self.create_client(MoveJoint, "/dsr01/motion/move_joint")
         self.cli_mode = self.create_client(GetRobotMode, "/dsr01/system/get_robot_mode")
         self.cli_state = self.create_client(GetRobotState, "/dsr01/system/get_robot_state")
+        self.cli_posx = self.create_client(
+            GetCurrentPosx, "/dsr01/aux_control/get_current_posx")
         self.cli_gripper_open = self.create_client(Trigger, "/dsr01/gripper/open")
         self.cli_gripper_close = self.create_client(Trigger, "/dsr01/gripper/close")
         self.gripper_pos_pub = self.create_publisher(Int32, "/dsr01/gripper/position_cmd", 10)
@@ -134,7 +136,7 @@ class JointJogControl(Node):
         print("  c         gripper close")
         print("  f         gripper set position value (0~1000)")
         print("  v         set velocity and acc")
-        print("  p         print current joints")
+        print("  p         print current joints + BASE TCP pose")
         print("  h         help")
         print("  q         quit")
         print("")
@@ -149,6 +151,24 @@ class JointJogControl(Node):
             f"vel={self.vel:.1f} acc={self.acc:.1f} | "
             f"current={[round(v, 2) for v in cur]}"
         )
+
+    def print_current_pose(self):
+        self.print_status()
+        if not self.cli_posx.wait_for_service(timeout_sec=1.0):
+            print("TCP: /dsr01/aux_control/get_current_posx not available")
+            return
+        req = GetCurrentPosx.Request()
+        req.ref = 0
+        future = self.cli_posx.call_async(req)
+        end = time.time() + 3.0
+        while not future.done() and time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.02)
+        res = future.result() if future.done() else None
+        if not res or not res.success or not res.task_pos_info:
+            print(f"TCP: read failed ({res})")
+            return
+        posx = [float(v) for v in res.task_pos_info[0].data[:6]]
+        print(f"TCP BASE [x,y,z,rx,ry,rz] = {[round(v, 2) for v in posx]}")
 
     def send_movej(self, joints_deg, sync_type=0, wait=True):
         if not self.cli_movej.wait_for_service(timeout_sec=0.5):
@@ -324,7 +344,7 @@ class JointJogControl(Node):
         elif key in ("right", "d"):
             self.change_step(+STEP_DEG_DELTA)
         elif key == "p":
-            self.print_status()
+            self.print_current_pose()
         elif key == "h":
             self.print_help()
         elif key == "o":

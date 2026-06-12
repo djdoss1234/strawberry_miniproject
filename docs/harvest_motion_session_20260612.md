@@ -243,3 +243,94 @@ Above 위치와 파지한 딸기의 하단 clearance를 먼저 확인한다.
 추가하면서 URDF XML 주석에 포함된 `center: 10mm` 문자열을 ROS Humble launch가
 YAML mapping으로 오해해 bringup이 실패했다. 주석의 콜론만 제거하여 실측 TCP
 구조를 유지한 채 launch parsing 문제를 해결했다.
+
+## End-of-day status: first observed Slot0 pick-and-place
+
+### Experimentally observed result
+
+2026-06-12 실기에서 SW 딸기 한 개를 수확한 뒤, 재티칭한 고정 Slot0에 배치하는
+전체 시퀀스가 처음으로 완료되었다. 사용자가 실제 Slot0 안착을 육안으로 확인했다.
+
+근거 runtime log:
+
+```text
+logs/runtime/2026-06-12/
+curobo_planner_node_20260612T184149-ec80505c.jsonl
+```
+
+관찰된 시퀀스:
+
+```text
+SW target 수신
+ -> cuRobo pre-approach
+ -> TOOL +Z 직선 접근
+ -> gripper close
+ -> BASE -Z detach
+ -> TOOL -Z retreat
+ -> cuRobo Slot0 Above transfer
+ -> BASE -Z 120mm descend
+ -> position_cmd=600 release
+ -> BASE +Z 120mm ascend
+ -> single-shot HOLD
+```
+
+로그 기준 `pick_sequence_start`부터 HOLD까지 약 `53.6초`가 걸렸다. 이는 최적화
+전 단일 run이며 반복 성능 수치가 아니다. Slot0 하강과 상승은 모두 성공으로
+기록되었고, `marker_place_complete`와 `TAUGHT_SLOT0_PLACE_COMPLETE_HOLD`가
+발행되었다.
+
+### Important evidence distinction
+
+- **육안 관찰:** 실제 딸기 1개가 Slot0에 정상 안착했다.
+- **자동 로그:** `PLACE_SEQUENCE_COMPLETE_UNVERIFIED`로 기록되었다.
+- **파지 검증:** gripper close와 close 재시도 명령은 성공 응답을 받았지만,
+  `read_state service error` 때문에 `GRASP_UNVERIFIED` 상태였다.
+
+따라서 이번 결과는 “Slot0 pick-and-place 실기 성공 사례 1건”으로 기록하되,
+자동 검증 성공률 또는 반복 Place 성공률로 주장하지 않는다.
+
+### Problems found and resolved today
+
+| 문제 | 원인 | 적용한 해결 |
+| --- | --- | --- |
+| 이동된 계란판과 기존 pose 불일치 | 예전 tray-view/Slot0 pose 사용 | 새 tray-view와 Slot0 release 재티칭 |
+| 낮은 Slot0로 직접 이동 중 딸기 하단 접촉 | release 자세를 transfer 목표로 직접 사용 | release FK 기준 `BASE +Z 120mm` Above 자동 생성 |
+| Slot0 Above 계획 거부 | 일반 수확용 J1 swing `75°` 제한이 정상 place transfer 차단 | Slot0 transfer에만 J1 `170°` 허용 |
+| Place 시 파츠 과도 개방 | `/gripper/open` 완전 개방 | `position_cmd=600` 제한 개방 |
+| 그리퍼 close 거짓 성공 가능성 | close 성공은 serial write ACK이며 실제 상태 미확인 | `GRASP_UNVERIFIED` 시 close 1회 재전송 및 재검증 |
+| 다음 딸기 자동 진행 위험 | 나머지 slot 경로 미검증 | Slot0 완료 직후 single-shot HOLD 유지 |
+
+### Remaining problems
+
+- 실제 그리퍼 position/current 읽기가 계속 실패하여 파지 성공 자동 판정이 불가능하다.
+- table 및 tray collision object가 비활성 상태라 계란판 주변 안전 여유를 planner가
+  완전히 검증하지 못한다.
+- 현재 성공한 고정 Slot0와 marker 기반 최신 Slot0 계산 좌표가 크게 달라 marker
+  좌표를 나머지 슬롯에 바로 사용할 수 없다.
+- 전체 작업 시간 약 `53.6초`는 길며, 그리퍼 통신 대기·재시도와 transfer 시간이
+  주요 단축 대상이다.
+- Slot0 성공은 1회 관찰 사례이며 반복 성공률은 아직 측정하지 않았다.
+
+### Tray configuration outside this repository
+
+`~/Downloads/share_tray/robot_poses.yaml`의 `egg_tray_view`도 아래 새 좌표로
+갱신했고, `run_tray_localization.py` 로더가 새 관절값을 읽는 것을 확인했다.
+
+```yaml
+joints_deg: [-1.02, 0.11, 97.09, 175.94, -31.34, 93.42]
+task_pose: [505.56, -15.35, 423.49, 176.29, -128.45, 88.27]
+```
+
+`share_tray` 디렉터리는 별도 Git 저장소가 아니므로 이 변경은 본 저장소 커밋에
+포함되지 않는다.
+
+### Next session priorities
+
+1. gripper `read_state` 통신을 안정화하고 실제 파지 상태 자동 판정을 검증한다.
+2. Slot1과 Slot3만 추가 티칭하여 열·행 방향 벡터를 계산한다.
+3. `Slot(r,c) = Slot0 + r * row_vector + c * col_vector`로 15개 release 목표를
+   자동 생성한다.
+4. 빈 그리퍼로 Slot2, Slot12, Slot14 모서리 위치와 Above/수직 하강을 검증한다.
+5. 검증된 빈 슬롯 순서로 한 개씩 Place하고, 각 시도마다 사람 라벨과 JSONL을
+   함께 기록한다.
+6. 이후 SW 연속 수확과 최소 30회 반복 KPI 측정을 시작한다.

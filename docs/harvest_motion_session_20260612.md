@@ -172,6 +172,34 @@ pick -> detach -> retreat -> taught slot0 direct transfer -> release -> HOLD
 `hold_after_taught_slot0_place:=true`가 기본값이며, slot1 이후 경로가 검증되기
 전에는 끄지 않는다.
 
+## Relocated tray pose and limited-open release
+
+계란판을 로봇에서 더 멀리 이동하고, 파지 상태의 딸기와 계란판 홈 방향이
+수평에 가깝도록 tray-view와 slot0 release를 다시 티칭했다.
+
+### New tray-view
+
+```yaml
+joints_deg: [-1.02, 0.11, 97.09, 175.94, -31.34, 93.42]
+posx_mm_deg: [505.56, -15.35, 423.49, 176.29, -128.45, 88.27]
+```
+
+### New slot0 release
+
+```yaml
+joints_deg: [4.43, 51.79, 119.38, 175.95, 80.84, 93.42]
+posx_mm_deg: [519.95, 52.39, 65.58, 8.43, 90.35, -87.20]
+```
+
+기존 slot0 reference는 새 계란판 위치에서 무효이며 새 값으로 교체했다. 실제
+고정 place 실행은 검증된 joint pose를 사용한다. controller TCP와 measured
+grasp TCP의 convention 차이가 있으므로 기록된 `posx z=65.58mm`만으로 collision
+clearance를 판단하지 않는다.
+
+Place release 시 `/gripper/open`으로 완전히 열지 않고, 접근 시 개도와 동일한
+`position_cmd=600`을 사용한다. 이를 통해 딸기를 홈에 내려놓을 때 파츠가 과도하게
+벌어지거나 계란판과 간섭하는 것을 줄인다.
+
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 
 ## Bringup YAML parsing incident

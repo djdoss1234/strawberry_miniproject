@@ -102,6 +102,7 @@ CARTESIAN_PLAN_TIMEOUT_SEC  = 0.8
 DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 
 GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (스캔 이동 중 미리 설정됨)
+GRIPPER_PLACE_RELEASE_POS   = 600  # place 시 완전 개방 대신 제한 개방
 
 # ── 파지 검증 ─────────────────────────────────────────────────────────────────
 # RH-P12-RN-A: 0=fully open, 700=fully closed
@@ -113,12 +114,15 @@ GRASP_VERIFY_TIMEOUT_SEC       = 20.0  # flange serial open/read 재시도까지
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
 OVERVIEW_JOINTS_DEG = [87.98, -94.92, 129.89, 175.94, -31.34, 93.42]  # 스캔 기준 포즈
-TRAY_VIEW_JOINTS_DEG = [-0.02, -2.41, 111.87, 175.94, -31.34, 93.42]
+TRAY_VIEW_JOINTS_DEG = [-1.02, 0.11, 97.09, 175.94, -31.34, 93.42]
+TRAY_VIEW_POSX_MM_DEG = [
+    505.56, -15.35, 423.49, 176.29, -128.45, 88.27,
+]
 TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG = [
-    5.34, 3.05, 124.87, 179.46, -3.46, 93.51,
+    4.43, 51.79, 119.38, 175.95, 80.84, 93.42,
 ]
 TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG = [
-    441.65, 41.20, 233.76, 5.30, 131.37, -87.05,
+    519.95, 52.39, 65.58, 8.43, 90.35, -87.20,
 ]
 DEFAULT_TRAY_CELLS_GLOB = os.path.expanduser(
     "~/Downloads/share_tray/output/tray_cells_*.json")
@@ -1434,11 +1438,15 @@ class CuroboPlanner(Node):
             return "preview_hold", list(self.current_joints or reference_joints)
 
         self.get_logger().warn(
-            "TAUGHT_SLOT0_PLACE_RELEASE: opening gripper at manually verified reference")
+            f"TAUGHT_SLOT0_PLACE_RELEASE: position_cmd={GRIPPER_PLACE_RELEASE_POS} "
+            "at manually verified reference")
         self.runtime_log.log(
-            "gripper_command", command="release", slot_index=0,
+            "gripper_command", command="position_cmd",
+            position=GRIPPER_PLACE_RELEASE_POS, slot_index=0,
             source="taught_slot0_place_reference")
-        self.call_trigger(self.cli_gripper_open)
+        release_msg = Int32()
+        release_msg.data = GRIPPER_PLACE_RELEASE_POS
+        self.gripper_pos_pub.publish(release_msg)
         time.sleep(2.0)
 
         self._marker_place_slot_idx = 1
@@ -1619,11 +1627,15 @@ class CuroboPlanner(Node):
             return "failed", list(self.current_joints or above_joints)
         release_joints = list(release_plan[0][-1].tolist())
 
-        self.get_logger().info("6 marker place release gripper")
+        self.get_logger().info(
+            f"6 marker place release gripper position_cmd={GRIPPER_PLACE_RELEASE_POS}")
         self.runtime_log.log(
-            "gripper_command", command="release",
+            "gripper_command", command="position_cmd",
+            position=GRIPPER_PLACE_RELEASE_POS,
             slot_index=target["slot_index"])
-        self.call_trigger(self.cli_gripper_open)
+        release_msg = Int32()
+        release_msg.data = GRIPPER_PLACE_RELEASE_POS
+        self.gripper_pos_pub.publish(release_msg)
         time.sleep(2.0)
 
         # RETREAT: release pose에서 먼저 above로 상승한 뒤 tray-view로 복귀한다.

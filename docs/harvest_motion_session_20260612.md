@@ -60,6 +60,25 @@ pick retreat
 - 고정 slot0 transfer에만 J1 최대 `170°`를 허용한다.
 - operational joint limit과 J4/J6 spline-jump 검사는 계속 적용한다.
 
+## Bent-stem grasp target correction
+
+줄기가 꺾인 딸기에서 그리퍼가 줄기 옆으로 접근해 빗겨 파지하는 현상이
+관찰되었다.
+
+원인은 fusion target이 파지점 근처의 줄기 방향이 아니라 `KP0 -> KP2` 전체
+줄기의 직선(chord)을 따라 KP0에서 10mm 이동하도록 계산된 점이다. 꺾인 줄기에서는
+이 chord가 실제 KP0 바로 위 줄기에서 측면으로 벗어난다.
+
+수정:
+
+- 기본 파지 목표 방향을 `KP0 -> KP1` 국소 줄기 방향으로 변경했다.
+- 기존 `KP0 -> KP2` 방식은 `stem_grasp_direction_mode` 파라미터로 되돌릴 수 있다.
+- `stem_bend_angle_deg`와 실제 사용한 target source를 runtime JSONL에 기록한다.
+- planner의 벽 수직 직선 접근은 유지한다. 줄기 방향 quaternion을 직접 접근축으로
+  사용하면 파츠가 측면 진입해 잎과 충돌할 수 있어 아직 실행에 반영하지 않는다.
+
+Place는 이 파지 정확도 검증 동안 비활성으로 실행한다.
+
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 
 ## Bringup YAML parsing incident

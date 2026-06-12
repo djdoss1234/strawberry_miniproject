@@ -183,6 +183,7 @@ class StrawberryFusionNode(Node):
         self.declare_parameter("stem_segment_max_m", 0.100)
         self.declare_parameter("stem_total_max_m", 0.160)
         self.declare_parameter("stem_grasp_offset_from_kp0_m", 0.010)
+        self.declare_parameter("stem_grasp_direction_mode", "kp0_to_kp1")
         self.declare_parameter("grasp_target_base_z_trim_m", 0.010)
         self.declare_parameter("infer_every",  3)       # run inference every N camera frames
         self.declare_parameter("stable_hits_required", 4)
@@ -213,6 +214,8 @@ class StrawberryFusionNode(Node):
             self.get_parameter("stem_total_max_m").value)
         self._stem_grasp_offset_m = max(
             0.0, float(self.get_parameter("stem_grasp_offset_from_kp0_m").value))
+        self._stem_grasp_direction_mode = str(
+            self.get_parameter("stem_grasp_direction_mode").value)
         self._grasp_target_base_z_trim_m = float(
             self.get_parameter("grasp_target_base_z_trim_m").value)
         self._infer_n = max(1, self.get_parameter("infer_every").value)
@@ -301,7 +304,7 @@ class StrawberryFusionNode(Node):
             f"segment={self._stem_segment_min_m*1000:.0f}.."
             f"{self._stem_segment_max_m*1000:.0f}mm")
         self.get_logger().info(
-            f"Stem grasp target: KP0 -> KP2 direction, "
+            f"Stem grasp target: mode={self._stem_grasp_direction_mode}, "
             f"offset up to {self._stem_grasp_offset_m*1000:.0f}mm, "
             f"base-Z trim={self._grasp_target_base_z_trim_m*1000:+.0f}mm")
         self.runtime_log.log(
@@ -318,6 +321,7 @@ class StrawberryFusionNode(Node):
                 "stem_segment_max_m": self._stem_segment_max_m,
                 "stem_total_max_m": self._stem_total_max_m,
                 "stem_grasp_offset_from_kp0_m": self._stem_grasp_offset_m,
+                "stem_grasp_direction_mode": self._stem_grasp_direction_mode,
                 "grasp_target_base_z_trim_m": self._grasp_target_base_z_trim_m,
                 "infer_every": self._infer_n,
                 "stable_hits_required": self._stable_hits,
@@ -805,19 +809,45 @@ class StrawberryFusionNode(Node):
                         )
                     continue
 
-                # Move from stem_base toward stem_tip instead of adding a
-                # base-frame Z bias. This follows diagonal stems and keeps the
-                # gripper centerline on the actual stem. Do not move beyond
-                # 80% of KP0->KP2 so the target remains fruit-adjacent.
-                kp0_to_stem_tip = kp3d[2] - kp3d[0]
-                kp0_to_stem_tip_len = float(np.linalg.norm(kp0_to_stem_tip))
+                # The grasp point is close to KP0, so use the local KP0->KP1
+                # tangent. KP0->KP2 is only a chord and shifts the target
+                # sideways when the stem is bent.
+                kp0_to_kp1 = kp3d[1] - kp3d[0]
+                kp0_to_kp2 = kp3d[2] - kp3d[0]
+                kp0_to_kp1_len = float(np.linalg.norm(kp0_to_kp1))
+                kp0_to_kp2_len = float(np.linalg.norm(kp0_to_kp2))
+                use_local_direction = (
+                    self._stem_grasp_direction_mode == "kp0_to_kp1"
+                    and kp0_to_kp1_len > 1e-6
+                )
+                grasp_vector = kp0_to_kp1 if use_local_direction else kp0_to_kp2
+                grasp_vector_len = (
+                    kp0_to_kp1_len if use_local_direction else kp0_to_kp2_len
+                )
+                if grasp_vector_len <= 1e-6:
+                    if run_infer:
+                        self._reject_target(
+                            "stem_grasp_direction_degenerate",
+                            mode=self._stem_grasp_direction_mode,
+                            kp3d_base_m=kp3d,
+                        )
+                    continue
                 grasp_step_m = min(
                     self._stem_grasp_offset_m,
-                    0.8 * kp0_to_stem_tip_len,
+                    0.8 * grasp_vector_len,
                 )
-                grasp_direction = kp0_to_stem_tip / kp0_to_stem_tip_len
+                grasp_direction = grasp_vector / grasp_vector_len
                 grasp_pt = kp3d[0] + grasp_step_m * grasp_direction
                 grasp_pt[2] += self._grasp_target_base_z_trim_m
+
+                bend_angle_deg = 0.0
+                if kp0_to_kp1_len > 1e-6 and kp0_to_kp2_len > 1e-6:
+                    bend_cos = float(np.dot(
+                        kp0_to_kp1 / kp0_to_kp1_len,
+                        kp0_to_kp2 / kp0_to_kp2_len,
+                    ))
+                    bend_angle_deg = float(np.degrees(np.arccos(np.clip(
+                        bend_cos, -1.0, 1.0))))
 
                 target_quality = {
                     "kp_conf": kp_conf,
@@ -830,15 +860,21 @@ class StrawberryFusionNode(Node):
                     "match_score": float(match["score"]),
                     "ripe_metrics": ripe_metrics,
                     "stem_segment_lengths_m": segment_lengths,
-                    "grasp_target_source": "kp0_toward_kp2_plus_base_z_trim",
+                    "grasp_target_source": (
+                        "kp0_toward_kp1_local_plus_base_z_trim"
+                        if use_local_direction
+                        else "kp0_toward_kp2_chord_plus_base_z_trim"
+                    ),
                     "grasp_offset_from_kp0_m": grasp_step_m,
                     "grasp_direction_base": grasp_direction,
+                    "stem_bend_angle_deg": bend_angle_deg,
                     "grasp_target_base_z_trim_m": self._grasp_target_base_z_trim_m,
                     "grasp_target_base_m": grasp_pt,
                 }
 
-                quat_xyzw = (stem_vec_to_quat_xyzw(stem_vec)
-                             if stem_vec is not None
+                local_stem_vec = kp0_to_kp1 if use_local_direction else stem_vec
+                quat_xyzw = (stem_vec_to_quat_xyzw(local_stem_vec)
+                             if local_stem_vec is not None
                              else np.array([0.0, 0.0, 0.0, 1.0]))
 
                 if run_infer:

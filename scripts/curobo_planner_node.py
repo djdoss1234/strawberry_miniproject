@@ -134,6 +134,11 @@ OPERATIONAL_JOINT_LIMITS_DEG = [
 ]
 WRAP_EQUIVALENT_JOINT_IDX = {3, 5}   # J1은 정규화 금지 (반대 branch로 스윙)
 MAX_HARVEST_JOINT_DELTA_DEG = [75.0, 90.0, 120.0, 150.0, 130.0, 180.0]
+# SW pick 영역에서 고정 slot0까지의 transfer는 J1 약 148° 회전이 필수다.
+# 수확 접근용 75° 제한은 유지하고, 이 고정 place transfer에만 별도 한계를 쓴다.
+MAX_TAUGHT_PLACE_TRANSFER_JOINT_DELTA_DEG = [
+    170.0, 100.0, 120.0, 150.0, 130.0, 180.0,
+]
 
 # ── Spline 실행 ────────────────────────────────────────────────────────────────
 MAX_SPLINE_POINTS = 12
@@ -676,10 +681,13 @@ class CuroboPlanner(Node):
                 return False
         return True
 
-    def trajectory_has_reasonable_swing(self, traj_rad, start_joints, label):
+    def trajectory_has_reasonable_swing(
+            self, traj_rad, start_joints, label,
+            max_joint_delta_deg=None):
         traj_deg = np.rad2deg(traj_rad)
         start_deg = np.rad2deg(start_joints)
-        for joint_idx, max_delta in enumerate(MAX_HARVEST_JOINT_DELTA_DEG):
+        limits = max_joint_delta_deg or MAX_HARVEST_JOINT_DELTA_DEG
+        for joint_idx, max_delta in enumerate(limits):
             vals = traj_deg[:, joint_idx]
             if joint_idx in WRAP_EQUIVALENT_JOINT_IDX:
                 # endpoint 등가 거리가 아닌 trajectory 실제 range 검사:
@@ -848,7 +856,8 @@ class CuroboPlanner(Node):
             )
             return None
 
-    def plan_js(self, start_joints, target_joints_rad, label, skip_swing_check=False):
+    def plan_js(self, start_joints, target_joints_rad, label, skip_swing_check=False,
+                max_joint_delta_deg=None):
         t0 = time.time()
         start_joints = self._clamp_joints(start_joints)
         target_joints_rad = self._clamp_joints(target_joints_rad)
@@ -873,7 +882,13 @@ class CuroboPlanner(Node):
                     "curobo_plan_rejected", planner="joint_space", label=label,
                     reason="operational_joint_limits", trajectory_rad=traj)
                 return None
-            if not skip_swing_check and not self.trajectory_has_reasonable_swing(traj, start_joints, label):
+            if not self.trajectory_has_no_spline_jumps(traj, label):
+                self.runtime_log.log(
+                    "curobo_plan_rejected", planner="joint_space", label=label,
+                    reason="spline_jump", trajectory_rad=traj)
+                return None
+            if not skip_swing_check and not self.trajectory_has_reasonable_swing(
+                    traj, start_joints, label, max_joint_delta_deg):
                 self.runtime_log.log(
                     "curobo_plan_rejected", planner="joint_space", label=label,
                     reason="joint_swing", trajectory_rad=traj)
@@ -1254,11 +1269,13 @@ class CuroboPlanner(Node):
         return ok
 
     def plan_to_fixed_joints_pose(self, start_joints, target_joints_deg, label,
-                                   skip_swing_check=False):
+                                   skip_swing_check=False,
+                                   max_joint_delta_deg=None):
         """고정 joint 자세 이동 — cuRobo joint-space plan."""
         target_joints_rad = np.deg2rad(target_joints_deg).tolist()
         ret = self.plan_js(start_joints, target_joints_rad, label,
-                           skip_swing_check=skip_swing_check)
+                           skip_swing_check=skip_swing_check,
+                           max_joint_delta_deg=max_joint_delta_deg)
         if ret is not None and self.execute_spline(*ret):
             return True, ret[0][-1].tolist()
         self.get_logger().warn(f"{label} CuRobo joint-space failed")
@@ -1366,7 +1383,8 @@ class CuroboPlanner(Node):
         reference_deg = self._nearest_equivalent_joints(
             TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG)
         ok, reference_joints = self.plan_to_fixed_joints_pose(
-            retreat_joints, reference_deg, "taught slot0 direct place reference")
+            retreat_joints, reference_deg, "taught slot0 direct place reference",
+            max_joint_delta_deg=MAX_TAUGHT_PLACE_TRANSFER_JOINT_DELTA_DEG)
         if not ok:
             self.get_logger().error(
                 "TAUGHT_SLOT0_PLACE_BLOCKED: direct reference plan failed; holding fruit")

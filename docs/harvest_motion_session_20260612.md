@@ -52,6 +52,14 @@ pick retreat
 통과한 경우에만 실행한다. 놓은 직후 tray-view로 복귀하지 않아 계란판 근처에서
 딸기를 끄는 동작도 제거했다.
 
+첫 직행 실기 시도에서는 SW retreat의 J1 `153.4°`에서 slot0의 J1 `5.3°`까지
+필요한 `148.1°` 회전을 수확 접근용 J1 제한 `75°`가 거부했다. 이는 IK 실패가
+아니라 작업 구간별 제한을 구분하지 않은 정책 문제였다.
+
+- 수확 접근의 J1 `75°` 제한은 유지한다.
+- 고정 slot0 transfer에만 J1 최대 `170°`를 허용한다.
+- operational joint limit과 J4/J6 spline-jump 검사는 계속 적용한다.
+
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 
 ## Bringup YAML parsing incident

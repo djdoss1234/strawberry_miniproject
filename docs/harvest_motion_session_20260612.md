@@ -227,6 +227,14 @@ Above 위치와 파지한 딸기의 하단 clearance를 먼저 확인한다.
 한계인 J1 `170°`를 적용했다. operational joint limit와 spline-jump 검사는 계속
 유지한다.
 
+### Gripper close ACK false-positive
+
+실기 로그에서 `/gripper/close`가 `Gripper position set: 700` 성공을 반환했지만
+실제 그리퍼가 닫히지 않았고, 이어진 `read_state`도 실패했다. close 서비스 성공은
+실제 파지가 아니라 flange serial write 요청 성공만 의미한다. 따라서 close ACK
+이후 파지 검증 결과가 `GRASP_UNVERIFIED`이면 close 명령을 한 번 재전송하고 상태를
+다시 읽도록 보강했다. 상태 읽기가 계속 실패하면 실제 파지 성공을 선언할 수 없다.
+
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 
 ## Bringup YAML parsing incident

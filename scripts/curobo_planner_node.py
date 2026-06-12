@@ -112,6 +112,7 @@ TAUGHT_SLOT0_VERTICAL_VEL_MM_S = 40.0   # 계란판 근처 하강/상승 속도
 # 임계값 이상이면 GRASP_EMPTY 판정.
 GRASP_EMPTY_POSITION_THRESHOLD = 665   # pos >= 665 → fully closed → nothing grabbed
 GRASP_VERIFY_TIMEOUT_SEC       = 20.0  # flange serial open/read 재시도까지 포함
+GRASP_UNVERIFIED_CLOSE_RETRY   = 1     # 명령 ACK 후 상태 읽기 실패 시 close 재전송
 
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
@@ -2094,6 +2095,29 @@ class CuroboPlanner(Node):
 
         # 3b. VERIFY_GRASP — 실제 그리퍼 위치를 읽어 파지 여부 판정
         grasp_result, present_pos, present_current_raw, grasp_reason = self._verify_grasp()
+        if grasp_result == "GRASP_UNVERIFIED":
+            for retry_idx in range(GRASP_UNVERIFIED_CLOSE_RETRY):
+                self.get_logger().warn(
+                    "VERIFY_GRASP returned GRASP_UNVERIFIED after close ACK; "
+                    f"resending close command ({retry_idx + 1}/"
+                    f"{GRASP_UNVERIFIED_CLOSE_RETRY})")
+                self.runtime_log.log(
+                    "gripper_close_retry",
+                    reason=grasp_reason,
+                    retry_index=retry_idx + 1,
+                )
+                retry_ok = self.call_trigger(
+                    self.cli_gripper_close,
+                    label="GRIPPER_CLOSE_VERIFY_RETRY",
+                    timeout_sec=20.0,
+                )
+                if not retry_ok:
+                    break
+                time.sleep(1.5)
+                grasp_result, present_pos, present_current_raw, grasp_reason = (
+                    self._verify_grasp())
+                if grasp_result != "GRASP_UNVERIFIED":
+                    break
         self.get_logger().info(
             f"VERIFY_GRASP: {grasp_result} present_pos={present_pos} "
             f"current_raw={present_current_raw} — {grasp_reason}")

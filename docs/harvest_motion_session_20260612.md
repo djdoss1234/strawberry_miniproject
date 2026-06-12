@@ -216,9 +216,16 @@ pick retreat
  -> HOLD
 ```
 
-계란판 근처 수직 하강/상승 속도는 `20mm/s`로 제한한다. table/tray collision
+계란판 근처 수직 하강/상승 속도는 초기 `20mm/s` 확인 후 `40mm/s`로 조정했다.
+table/tray collision
 objects가 아직 비활성화되어 있으므로 첫 실기 검증은 release disabled 상태에서
 Above 위치와 파지한 딸기의 하단 clearance를 먼저 확인한다.
+
+첫 Above 실기 시도는 SW retreat의 J1 `135.0°`에서 Above J1 `4.4°`로 이동하는
+정상적인 place transfer를 일반 수확용 J1 swing 한계 `75°`가 거부했다. 수확
+접근의 제한은 유지하고, 고정 Slot0 Above Cartesian plan에만 기존 place transfer
+한계인 J1 `170°`를 적용했다. operational joint limit와 spline-jump 검사는 계속
+유지한다.
 
 첫 실기 검증 명령은 반드시 `execute_marker_place_release:=false`로 실행한다.
 

@@ -104,7 +104,7 @@ DIRECT_GRASP_TARGET_X_RANGE_M = (-0.45, 0.45)
 GRIPPER_APPROACH_POS        = 600  # 접근 시 개도 (스캔 이동 중 미리 설정됨)
 GRIPPER_PLACE_RELEASE_POS   = 600  # place 시 완전 개방 대신 제한 개방
 TAUGHT_SLOT0_ABOVE_CLEARANCE_M = 0.120  # release 자세 바로 위 수직 진입 여유
-TAUGHT_SLOT0_VERTICAL_VEL_MM_S = 20.0   # 계란판 근처 하강/상승 속도
+TAUGHT_SLOT0_VERTICAL_VEL_MM_S = 40.0   # 계란판 근처 하강/상승 속도
 
 # ── 파지 검증 ─────────────────────────────────────────────────────────────────
 # RH-P12-RN-A: 0=fully open, 700=fully closed
@@ -791,7 +791,7 @@ class CuroboPlanner(Node):
         return True
 
     def plan(self, start_joints, target_pos, target_quat_wxyz, num_ik_seeds=32,
-             max_attempts=None, timeout_sec=None):
+             max_attempts=None, timeout_sec=None, max_joint_delta_deg=None):
         t0 = time.time()
         start_joints = self._clamp_joints(start_joints)
         start_state = CuroboJointState.from_position(
@@ -846,7 +846,9 @@ class CuroboPlanner(Node):
                     trajectory_rad=traj,
                 )
                 return None
-            if not self.trajectory_has_reasonable_swing(traj, start_joints, "Cartesian plan"):
+            if not self.trajectory_has_reasonable_swing(
+                    traj, start_joints, "Cartesian plan",
+                    max_joint_delta_deg=max_joint_delta_deg):
                 self.runtime_log.log(
                     "curobo_plan_rejected",
                     planner="cartesian",
@@ -1430,7 +1432,8 @@ class CuroboPlanner(Node):
             f"goal_mm={[round(v * 1000, 1) for v in above_pos_m]}")
         above_plan = self.plan(
             retreat_joints, above_pos_m, release_fk_quat,
-            num_ik_seeds=64, max_attempts=3, timeout_sec=2.0)
+            num_ik_seeds=64, max_attempts=3, timeout_sec=2.0,
+            max_joint_delta_deg=MAX_TAUGHT_PLACE_TRANSFER_JOINT_DELTA_DEG)
         if above_plan is None or not self.execute_spline(*above_plan):
             self.get_logger().error(
                 "TAUGHT_SLOT0_PLACE_BLOCKED: above plan failed; holding fruit")

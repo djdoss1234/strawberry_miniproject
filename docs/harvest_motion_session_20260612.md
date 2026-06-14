@@ -601,6 +601,33 @@ BASE `-Z`는 정상적인 수직 Place 단계였으나, 그 시작점인 계산 
 다음 단계는 실제 Slot2 release pose의 joint/TCP를 티칭하고, Slot2 Above 및
 수직 하강을 preview로 검증한 뒤 계산 grid 오차를 판단하는 것이다.
 
+### 2026-06-14 마커 위치 + Slot0·1·3 실측 pitch 결합
+
+슬롯마다 절대 좌표를 티칭하면 tray가 이동할 때 다시 사용할 수 없으므로,
+Slot0·1·3 티칭값은 절대 Place 목표가 아니라 실제 tray pitch 보정값으로
+사용한다.
+
+```text
+마커 JSON Slot0 contact = 현재 tray 위치 기준 anchor
+마커 JSON Slot0→1 / Slot0→3 방향 = 현재 tray 회전 방향
+티칭 Slot0→1 거리 = 실제 세로 pitch 약 59.8mm
+티칭 Slot0→3 거리 = 실제 가로 pitch 약 51.3mm
+```
+
+마커 JSON 기본 pitch는 최신 파일 기준 약 `51.7/50.0mm`였으므로, planner가
+마커 방향은 유지하면서 실측 pitch로 선택 슬롯의 contact 위치를 보정하도록
+변경했다. 이 구조에서는 tray가 이동·회전해도 마커를 다시 스캔하면 전체 슬롯
+목표가 함께 이동한다.
+
+마커 기반 Place 실행에서는 반드시 다음을 지킨다.
+
+```text
+use_taught_slot0_place_reference:=false
+```
+
+`true`이면 마커 localization을 우회하고 고정 tray 경로를 사용한다. 첫 검증은
+`execute_marker_place_release:=false`로 Slot2 Above preview만 수행한다.
+
 ## 2026-06-14 — KP1 열린 그리퍼 하강 파지 시퀀스
 
 수평 직선 진입 중 잎에 닿아 딸기가 밀리는 문제를 줄이기 위해, 수평 접근

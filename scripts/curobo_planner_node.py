@@ -1370,6 +1370,63 @@ class CuroboPlanner(Node):
         )
         return files[0] if files else None
 
+    def _marker_cell_with_taught_grid_pitch(self, cells, slot_index):
+        """마커의 위치/회전 방향에 Slot0·1·3 실측 tray pitch를 적용한다."""
+        by_index = {int(cell.get("index", idx)): cell for idx, cell in enumerate(cells)}
+        if not all(index in by_index for index in (0, 1, 3, slot_index)):
+            raise ValueError("marker JSON missing required slot0/1/3/target cells")
+
+        cell0 = by_index[0]
+        selected = dict(by_index[slot_index])
+        contact0 = np.array([
+            float(cell0["position_contact_mm"][axis]) for axis in ("x", "y", "z")
+        ])
+        contact1 = np.array([
+            float(by_index[1]["position_contact_mm"][axis]) for axis in ("x", "y", "z")
+        ])
+        contact3 = np.array([
+            float(by_index[3]["position_contact_mm"][axis]) for axis in ("x", "y", "z")
+        ])
+        marker_vertical = contact1 - contact0
+        marker_horizontal = contact3 - contact0
+        marker_vertical_norm = float(np.linalg.norm(marker_vertical))
+        marker_horizontal_norm = float(np.linalg.norm(marker_horizontal))
+        if marker_vertical_norm < 1e-6 or marker_horizontal_norm < 1e-6:
+            raise ValueError("invalid marker tray grid axis")
+
+        taught_slot0 = np.array(TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG[:3])
+        taught_vertical_pitch = float(np.linalg.norm(
+            np.array(TAUGHT_SLOT1_PLACE_REFERENCE_POSX_MM_DEG[:3]) - taught_slot0))
+        taught_horizontal_pitch = float(np.linalg.norm(
+            np.array(TAUGHT_SLOT3_PLACE_REFERENCE_POSX_MM_DEG[:3]) - taught_slot0))
+        horizontal_idx, vertical_idx = divmod(slot_index, 3)
+        calibrated_contact = (
+            contact0
+            + vertical_idx * taught_vertical_pitch * marker_vertical / marker_vertical_norm
+            + horizontal_idx * taught_horizontal_pitch * marker_horizontal / marker_horizontal_norm
+        )
+
+        original_contact = np.array([
+            float(selected["position_contact_mm"][axis]) for axis in ("x", "y", "z")
+        ])
+        correction = calibrated_contact - original_contact
+        selected["position_contact_mm"] = {
+            axis: float(calibrated_contact[idx])
+            for idx, axis in enumerate(("x", "y", "z"))
+        }
+        if "position_tcp_mm" in selected:
+            selected["position_tcp_mm"] = {
+                axis: float(selected["position_tcp_mm"][axis]) + float(correction[idx])
+                for idx, axis in enumerate(("x", "y", "z"))
+            }
+        return selected, {
+            "marker_vertical_pitch_mm": marker_vertical_norm,
+            "marker_horizontal_pitch_mm": marker_horizontal_norm,
+            "taught_vertical_pitch_mm": taught_vertical_pitch,
+            "taught_horizontal_pitch_mm": taught_horizontal_pitch,
+            "position_correction_mm": correction.tolist(),
+        }
+
     def _load_marker_place_target(self):
         path = self._latest_tray_cells_json()
         if not path or not os.path.isfile(path):
@@ -1387,7 +1444,9 @@ class CuroboPlanner(Node):
             cells = data.get("cells", [])
             if not cells:
                 raise ValueError("no cells")
-            cell = cells[self._marker_place_slot_idx % len(cells)]
+            slot_index = self._marker_place_slot_idx % len(cells)
+            cell, grid_calibration = self._marker_cell_with_taught_grid_pitch(
+                cells, slot_index)
             orient = cell["task_orientation_deg"]
             if self._measured_tcp_model and "position_contact_mm" in cell:
                 # share_tray의 position_tcp_mm는 기존 Robotis TCP에서 연장 파츠
@@ -1443,7 +1502,17 @@ class CuroboPlanner(Node):
             target_source=target_source,
             source_contact_mm=cell.get("position_contact_mm"),
             source_legacy_tcp_mm=cell.get("position_tcp_mm"),
+            grid_calibration=grid_calibration,
         )
+        self.get_logger().info(
+            f"MARKER_TRAY_GRID slot={cell.get('index')} "
+            f"marker_pitch(vertical/horizontal)="
+            f"{grid_calibration['marker_vertical_pitch_mm']:.1f}/"
+            f"{grid_calibration['marker_horizontal_pitch_mm']:.1f}mm -> "
+            f"taught_pitch="
+            f"{grid_calibration['taught_vertical_pitch_mm']:.1f}/"
+            f"{grid_calibration['taught_horizontal_pitch_mm']:.1f}mm "
+            f"correction={np.round(grid_calibration['position_correction_mm'], 1).tolist()}mm")
         return {
             "path": path,
             "slot_index": int(cell.get("index", self._marker_place_slot_idx)),

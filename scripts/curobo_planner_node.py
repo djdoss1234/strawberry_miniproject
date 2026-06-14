@@ -1084,16 +1084,23 @@ class CuroboPlanner(Node):
         )
         future = self.cli_movel.call_async(req)
         t0 = time.time()
-        while not future.done() and (time.time() - t0) < 30.0:
+        # The Doosan operation-speed slider scales the commanded velocity.
+        # At 10%, a nominal 180 mm / 50 mm/s move takes about 36 s, so a fixed
+        # 30 s timeout aborts just before arrival and prevents gripper close.
+        nominal_motion_sec = abs(distance_m * 1000.0) / max(float(vel), 1.0)
+        timeout_sec = max(30.0, nominal_motion_sec * 10.0 + 10.0)
+        while not future.done() and (time.time() - t0) < timeout_sec:
             time.sleep(0.05)
         ok = future.done() and future.result() and future.result().success
         if not ok:
-            self.get_logger().error(f"{motion_label} MoveLine failed/timeout")
+            self.get_logger().error(
+                f"{motion_label} MoveLine failed/timeout>{timeout_sec:.1f}s")
         self.runtime_log.log(
             "motion_result",
             controller="doosan_move_line",
             label=motion_label,
             success=bool(ok),
+            timeout_sec=timeout_sec,
             current_joints_rad=self.current_joints,
         )
         return ok

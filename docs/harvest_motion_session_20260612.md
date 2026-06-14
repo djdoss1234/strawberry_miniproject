@@ -418,3 +418,30 @@ TAUGHT_TRAY_SLOT2_PLACE_PREVIEW_HOLD
 `execute_marker_place_release:=false`이므로 수직 하강과 그리퍼 release는 실행하지
 않는다. Above 위치에서 E-stop 여유, 딸기 하단과 계란판 간격, 로봇 링크와 테이블
 간격을 확인한 뒤 다음 검증으로 넘어간다.
+
+### 2026-06-14 Slot2 preview 첫 시도 실패 원인
+
+첫 Slot2 preview는 Place에 도달하기 전 Pick 직선 진입에서 중단되었다.
+
+```text
+MoveSplineJoint 요청: 120 deg/s, 180 deg/s2, requested time 0.75 s
+실제 MoveSplineJoint 응답 시간: 약 34.7 s
+MoveLine 요청: TOOL +Z 180 mm, 50 mm/s
+고정 service timeout: 30 s
+결과: FINAL_APPROACH_STRAIGHT timeout -> gripper close 미실행
+```
+
+`/dsr01/realtime/read_data_rt`로 확인한 실제 컨트롤러
+`operation_speed_rate`는 `10%`였다. 따라서 180 mm 직선 진입의 실제 속도는
+명목상 50 mm/s가 아니라 약 5 mm/s이며, 예상 시간 약 36초가 고정 30초 timeout을
+초과했다. 그리퍼 고장이 아니라 직선 진입 실패 시퀀스가 안전하게 close를 생략한
+것이다.
+
+수정:
+
+- MoveLine timeout을 고정 30초에서 `거리 / 명령 속도` 기반으로 계산한다.
+- 최소 운전 속도율 10%까지 고려하고 10초 여유를 추가한다.
+- 빠른 실기 검증 시에는 티치펜던트 운전 속도율을 먼저 확인한다.
+
+속도율을 올리면 모든 로봇 동작이 함께 빨라지므로, Slot2/12/14 모서리 preview는
+우선 `30%` 정도에서 수행하고 clearance 확인 후 단계적으로 조정한다.

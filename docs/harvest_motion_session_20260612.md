@@ -334,3 +334,87 @@ task_pose: [505.56, -15.35, 423.49, 176.29, -128.45, 88.27]
 5. 검증된 빈 슬롯 순서로 한 개씩 Place하고, 각 시도마다 사람 라벨과 JSONL을
    함께 기록한다.
 6. 이후 SW 연속 수확과 최소 30회 반복 KPI 측정을 시작한다.
+
+## 2026-06-14 — Slot1/Slot3 티칭 기반 15-slot 격자 생성
+
+계란판 인덱스는 다음과 같이 확정했다.
+
+```text
+Slot0   Slot3   Slot6   Slot9   Slot12
+Slot1   Slot4   Slot7   Slot10  Slot13
+Slot2   Slot5   Slot8   Slot11  Slot14
+```
+
+추가 실측 티칭값:
+
+| 기준 | Joint deg | TCP BASE `[x,y,z,rx,ry,rz]` |
+| --- | --- | --- |
+| Slot1 | `[6.02, 50.74, 128.89, 177.59, 89.27, 92.82]` | `[460.24, 55.83, 66.47, 8.43, 90.36, 87.20]` |
+| Slot3 | `[-3.93, 52.00, 120.58, 167.53, 82.38, 94.40]` | `[511.91, 1.83, 63.12, 8.43, 90.37, -87.20]` |
+
+Slot0 대비 위치 벡터:
+
+```text
+Slot0 -> Slot1: [-59.71, +3.44, +0.89] mm, 길이 59.82 mm
+Slot0 -> Slot3: [ -8.04,-50.56, -2.46] mm, 길이 51.25 mm
+두 벡터 cosine 약 0.099: 거의 직교
+```
+
+Slot1의 티칭 손목 방향은 Slot0/Slot3과 반대이므로 위치 벡터만 사용한다. 생성된
+15개 슬롯은 검증된 Slot0 cuRobo FK orientation을 공통으로 유지한다. 또한
+controller TCP와 cuRobo measured TCP 기준점 차이를 피하기 위해, Slot0의 cuRobo
+FK 위치에 실측 BASE 위치 차이만 더해 각 목표를 생성한다.
+
+예상 모서리 release 위치:
+
+| Slot | TCP BASE 예상 위치 `[x,y,z] mm` |
+| --- | --- |
+| Slot2 | `[400.53, 59.27, 67.36]` |
+| Slot12 | `[487.79, -149.85, 55.74]` |
+| Slot14 | `[368.37, -142.97, 57.52]` |
+
+코드에는 `initial_place_slot_index` 파라미터와 15-slot 순차 증가 로직을 추가했다.
+모든 슬롯을 사용하면 `TAUGHT_TRAY_FULL`로 자동 진행을 정지한다.
+
+실기 적용 전 검증 순서:
+
+1. `execute_marker_place_release:=false`로 Slot2, Slot12, Slot14의 Above 위치를 확인한다.
+2. 계란판 및 테이블과의 여유를 육안 확인한다.
+3. 각 모서리에서 수직 하강을 저속 단일 실행으로 검증한다.
+4. 검증 후에만 `hold_after_taught_slot0_place:=false`로 연속 Place를 허용한다.
+
+현재 table/tray collision object가 비활성 상태이므로 모서리 검증 전 연속 실기
+Place는 수행하지 않는다.
+
+### Corner Above preview commands
+
+현재 preview는 독립적인 tray 이동 명령이 아니라, 한 번의 pick/retreat 이후 지정
+슬롯 Above로 이동하는 전체 시퀀스다. 따라서 딸기를 잡은 상태에서 하단 clearance도
+함께 확인해야 한다. 각 preview 후 planner가 HOLD되므로 다음 슬롯은 planner를
+재시작해서 검증한다.
+
+첫 검증은 Slot2부터 시작한다.
+
+```bash
+source ~/doosan_ws/install/setup.bash
+ros2 run e0509_gripper_description curobo_planner_node.py --ros-args \
+  -p measured_tcp_plan_only:=false \
+  -p enable_marker_place_sequence:=true \
+  -p use_taught_slot0_place_reference:=true \
+  -p initial_place_slot_index:=2 \
+  -p execute_marker_place_release:=false \
+  -p allow_unverified_grasp_place:=true
+```
+
+Slot2 Above를 확인한 뒤 같은 명령의 `initial_place_slot_index`만 각각 `12`, `14`로
+바꿔 반복한다. 예상 로그는 다음과 같다.
+
+```text
+TAUGHT_TRAY_GRID_PLACE active: slot=2
+TAUGHT_TRAY_SLOT2_ABOVE generated from Slot0 FK + grid offset
+TAUGHT_TRAY_SLOT2_PLACE_PREVIEW_HOLD
+```
+
+`execute_marker_place_release:=false`이므로 수직 하강과 그리퍼 release는 실행하지
+않는다. Above 위치에서 E-stop 여유, 딸기 하단과 계란판 간격, 로봇 링크와 테이블
+간격을 확인한 뒤 다음 검증으로 넘어간다.

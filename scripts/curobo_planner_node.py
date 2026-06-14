@@ -127,6 +127,20 @@ TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG = [
 TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG = [
     519.95, 52.39, 65.58, 8.43, 90.35, -87.20,
 ]
+# Tray indexing confirmed on 2026-06-14:
+#   0  3  6  9 12
+#   1  4  7 10 13
+#   2  5  8 11 14
+# Use taught positions only to derive the physical grid vectors. All generated
+# slots keep the verified Slot0 FK orientation; Slot1's taught wrist orientation
+# differs and must not be propagated across the tray.
+TAUGHT_SLOT1_PLACE_REFERENCE_POSX_MM_DEG = [
+    460.24, 55.83, 66.47, 8.43, 90.36, 87.20,
+]
+TAUGHT_SLOT3_PLACE_REFERENCE_POSX_MM_DEG = [
+    511.91, 1.83, 63.12, 8.43, 90.37, -87.20,
+]
+TAUGHT_TRAY_SLOT_COUNT = 15
 DEFAULT_TRAY_CELLS_GLOB = os.path.expanduser(
     "~/Downloads/share_tray/output/tray_cells_*.json")
 
@@ -308,6 +322,7 @@ class CuroboPlanner(Node):
         self.declare_parameter("execute_marker_place_release", False)
         self.declare_parameter("use_taught_slot0_place_reference", False)
         self.declare_parameter("hold_after_taught_slot0_place", True)
+        self.declare_parameter("initial_place_slot_index", 0)
         self.declare_parameter("allow_unverified_grasp_place", False)
         self.declare_parameter("grasp_current_contact_threshold_raw", -1)
         self.declare_parameter("tray_cells_json", "")
@@ -327,6 +342,11 @@ class CuroboPlanner(Node):
             self.get_parameter("use_taught_slot0_place_reference").value)
         self._hold_after_taught_slot0_place = bool(
             self.get_parameter("hold_after_taught_slot0_place").value)
+        self._marker_place_slot_idx = int(
+            self.get_parameter("initial_place_slot_index").value)
+        if not 0 <= self._marker_place_slot_idx < TAUGHT_TRAY_SLOT_COUNT:
+            raise ValueError(
+                f"initial_place_slot_index must be 0..{TAUGHT_TRAY_SLOT_COUNT - 1}")
         self._allow_unverified_grasp_place = bool(
             self.get_parameter("allow_unverified_grasp_place").value)
         self._grasp_current_contact_threshold_raw = int(
@@ -410,6 +430,7 @@ class CuroboPlanner(Node):
             execute_marker_place_release=self._execute_marker_place_release,
             use_taught_slot0_place_reference=self._use_taught_slot0_place_reference,
             hold_after_taught_slot0_place=self._hold_after_taught_slot0_place,
+            initial_place_slot_index=self._marker_place_slot_idx,
             allow_unverified_grasp_place=self._allow_unverified_grasp_place,
             grasp_current_contact_threshold_raw=self._grasp_current_contact_threshold_raw,
             marker_place_max_age_sec=self._marker_place_max_age_sec,
@@ -1415,20 +1436,39 @@ class CuroboPlanner(Node):
             "contact_mm": cell.get("position_contact_mm"),
         }
 
+    def _taught_grid_slot_offset_m(self, slot_index: int):
+        """Slot0/1/3 실측 위치로부터 지정 슬롯의 BASE 위치 오프셋을 계산한다."""
+        slot0 = np.array(TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG[:3], dtype=float)
+        slot1 = np.array(TAUGHT_SLOT1_PLACE_REFERENCE_POSX_MM_DEG[:3], dtype=float)
+        slot3 = np.array(TAUGHT_SLOT3_PLACE_REFERENCE_POSX_MM_DEG[:3], dtype=float)
+        horizontal_idx, vertical_idx = divmod(slot_index, 3)
+        offset_mm = horizontal_idx * (slot3 - slot0) + vertical_idx * (slot1 - slot0)
+        return (offset_mm / 1000.0).tolist()
+
     def _execute_taught_slot0_place_reference_after_retreat(self, retreat_joints):
-        """검증된 slot0 release 자세 위로 이동한 뒤 수직 하강·상승한다."""
+        """Slot0 FK와 실측 격자 벡터로 생성한 슬롯에 수직 Place한다."""
+        slot_index = self._marker_place_slot_idx
+        if not 0 <= slot_index < TAUGHT_TRAY_SLOT_COUNT:
+            self.get_logger().error(
+                f"TAUGHT_TRAY_PLACE_COMPLETE: slot index {slot_index} out of range")
+            return "tray_complete", retreat_joints
         self.get_logger().warn(
-            "TAUGHT_SLOT0_PLACE_REFERENCE active: fixed tray pose only; "
+            f"TAUGHT_TRAY_GRID_PLACE active: slot={slot_index}; fixed tray pose only; "
             "marker localization is bypassed")
 
         reference_deg = self._nearest_equivalent_joints(
             TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG)
         reference_rad = np.deg2rad(reference_deg).tolist()
         release_fk_pos_m, release_fk_quat = self._curobo_fk_ee_pose(reference_rad)
-        above_pos_m = list(release_fk_pos_m)
+        slot_offset_m = self._taught_grid_slot_offset_m(slot_index)
+        release_pos_m = (
+            np.array(release_fk_pos_m, dtype=float)
+            + np.array(slot_offset_m, dtype=float)
+        ).tolist()
+        above_pos_m = list(release_pos_m)
         above_pos_m[2] += TAUGHT_SLOT0_ABOVE_CLEARANCE_M
         self.get_logger().info(
-            "TAUGHT_SLOT0_ABOVE auto-generated from release FK: "
+            f"TAUGHT_TRAY_SLOT{slot_index}_ABOVE generated from Slot0 FK + grid offset: "
             f"clearance={TAUGHT_SLOT0_ABOVE_CLEARANCE_M*1000:.0f}mm "
             f"goal_mm={[round(v * 1000, 1) for v in above_pos_m]}")
         above_plan = self.plan(
@@ -1437,21 +1477,26 @@ class CuroboPlanner(Node):
             max_joint_delta_deg=MAX_TAUGHT_PLACE_TRANSFER_JOINT_DELTA_DEG)
         if above_plan is None or not self.execute_spline(*above_plan):
             self.get_logger().error(
-                "TAUGHT_SLOT0_PLACE_BLOCKED: above plan failed; holding fruit")
+                f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_BLOCKED: "
+                "above plan failed; holding fruit")
             return "failed", retreat_joints
         above_joints = list(above_plan[0][-1].tolist())
 
         self.runtime_log.log(
             "taught_slot0_place_above_reached",
+            slot_index=slot_index,
             release_enabled=self._execute_marker_place_release,
             reference_joints_deg=reference_deg,
             reference_posx_mm_deg=TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG,
+            slot_offset_m=slot_offset_m,
+            generated_release_pos_m=release_pos_m,
             above_pos_m=above_pos_m,
             above_clearance_m=TAUGHT_SLOT0_ABOVE_CLEARANCE_M,
         )
         if not self._execute_marker_place_release:
             self.get_logger().warn(
-                "TAUGHT_SLOT0_PLACE_PREVIEW_HOLD: above reached; release disabled")
+                f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_PREVIEW_HOLD: "
+                "above reached; release disabled")
             return "preview_hold", list(self.current_joints or above_joints)
 
         if not self.execute_base_z_relative(
@@ -1459,17 +1504,17 @@ class CuroboPlanner(Node):
                 "TAUGHT_SLOT0_RELEASE_DESCEND",
                 TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
             self.get_logger().error(
-                "TAUGHT_SLOT0_PLACE_BLOCKED: vertical release descend failed; "
-                "holding fruit")
+                f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_BLOCKED: "
+                "vertical release descend failed; holding fruit")
             return "failed", list(self.current_joints or above_joints)
 
         self.get_logger().warn(
-            f"TAUGHT_SLOT0_PLACE_RELEASE: position_cmd={GRIPPER_PLACE_RELEASE_POS} "
-            "at manually verified reference")
+            f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_RELEASE: "
+            f"position_cmd={GRIPPER_PLACE_RELEASE_POS}")
         self.runtime_log.log(
             "gripper_command", command="position_cmd",
-            position=GRIPPER_PLACE_RELEASE_POS, slot_index=0,
-            source="taught_slot0_place_reference")
+            position=GRIPPER_PLACE_RELEASE_POS, slot_index=slot_index,
+            source="taught_slot0_grid_reference")
         release_msg = Int32()
         release_msg.data = GRIPPER_PLACE_RELEASE_POS
         self.gripper_pos_pub.publish(release_msg)
@@ -1480,21 +1525,22 @@ class CuroboPlanner(Node):
                 "TAUGHT_SLOT0_RELEASE_ASCEND",
                 TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
             self.get_logger().error(
-                "TAUGHT_SLOT0_RELEASED_BUT_ASCEND_FAILED: holding position")
+                f"TAUGHT_TRAY_SLOT{slot_index}_RELEASED_BUT_ASCEND_FAILED: "
+                "holding position")
             return "failed_after_release", list(self.current_joints or above_joints)
 
-        self._marker_place_slot_idx = 1
+        self._marker_place_slot_idx += 1
         self.runtime_log.log(
             "marker_place_complete",
             result_code="PLACE_SEQUENCE_COMPLETE_UNVERIFIED",
-            slot_index=0,
-            source="taught_slot0_place_reference",
+            slot_index=slot_index,
+            source="taught_slot0_grid_reference",
         )
         return "success", list(self.current_joints or above_joints)
 
     def _execute_marker_place_after_retreat(self, retreat_joints):
         """Marker-derived place. Release 승인 전에는 above에서 정지한다."""
-        if self._use_taught_slot0_place_reference and self._marker_place_slot_idx == 0:
+        if self._use_taught_slot0_place_reference:
             return self._execute_taught_slot0_place_reference_after_retreat(
                 retreat_joints)
 
@@ -2209,17 +2255,32 @@ class CuroboPlanner(Node):
                     self._use_taught_slot0_place_reference
                     and self._hold_after_taught_slot0_place
                 ):
+                    completed_slot_index = self._marker_place_slot_idx - 1
                     self._clear_neighbor_obstacles()
                     self.runtime_log.log(
                         "pick_sequence_stopped",
-                        result_code="TAUGHT_SLOT0_PLACE_COMPLETE_HOLD",
+                        result_code="TAUGHT_TRAY_PLACE_COMPLETE_HOLD",
+                        slot_index=completed_slot_index,
                         current_joints_rad=self.current_joints,
                     )
                     self.get_logger().warn(
-                        "TAUGHT_SLOT0_PLACE_COMPLETE_HOLD: slot0 release complete; "
+                        f"TAUGHT_TRAY_SLOT{completed_slot_index}_PLACE_COMPLETE_HOLD: "
+                        "release complete; "
                         "automatic next pick blocked until planner restart")
-                    self._hold_pick_sequence("taught_slot0_place_complete")
+                    self._hold_pick_sequence("taught_tray_place_complete")
                     return
+            elif place_status == "tray_complete":
+                self._clear_neighbor_obstacles()
+                self.runtime_log.log(
+                    "pick_sequence_stopped",
+                    result_code="TAUGHT_TRAY_FULL",
+                    current_joints_rad=self.current_joints,
+                )
+                self.get_logger().warn(
+                    "TAUGHT_TRAY_FULL: all 15 slots consumed; "
+                    "automatic next pick blocked until tray reset")
+                self._hold_pick_sequence("taught_tray_full")
+                return
             elif place_status == "skip":
                 # tray 없음/stale — place 생략, scan 복귀
                 self.get_logger().warn("PLACE_SKIPPED: tray unavailable; returning to scan")

@@ -565,29 +565,23 @@ result: TAUGHT_TRAY_SLOT2_PLACE_PREVIEW_HOLD
 `execute_marker_place_release:=true`로 명시해야 한다. 모서리 하강 clearance를
 아직 확인하지 않았다면 preview 상태를 유지한다.
 
-## 2026-06-14 — Slot2 실제 release 위치 오류 분석 및 수정
+## 2026-06-14 — cuRobo EE와 Doosan TCP 이중 정렬 실패
 
-실제 release 실행 로그에는 `slot=2`와 Slot2 Above 계획 성공이 기록됐지만,
-육안으로는 Slot2에 정렬되지 않은 위치에서 BASE `-Z` 하강 후 release했다.
+Slot2 Above cuRobo 이동 후 Doosan BASE TCP 절대 MoveLine을 추가로 실행했으나,
+해당 명령이 관절한도에 걸려 로봇이 정지했다.
 
-원인은 고정 tray grid의 슬롯 간격은 Doosan controller의 실측 BASE TCP 좌표로
-계산하면서, 최종 Above 목표의 기준점은 cuRobo Slot0 FK를 사용한 것이다.
-따라서 로그상 Slot2 계획은 성공해도 실제 controller TCP 기준 Slot2 중심과
-일치한다고 보장할 수 없었다.
+원인은 cuRobo EE 좌표 `[657.7, 97.3, 185.8]mm`와 Doosan controller TCP 좌표
+`[400.5, 59.3, 187.4]mm`의 숫자 차이를 위치 오차로 잘못 해석한 것이다.
+두 좌표는 서로 다른 TCP 기준점으로 같은 물리 자세를 표현하므로, cuRobo가
+Slot2 Above에 이동한 뒤 controller TCP 절대 좌표로 다시 정렬하면 이중 보정이
+된다.
 
-수정 후 고정 tray place는 다음 순서로 실행한다.
+따라서 추가 BASE ABS MoveLine은 제거했다. 현재 Place 경로는 다시 다음과 같다.
 
-1. cuRobo가 tray 상부 transfer 경로를 생성하고 실행한다.
-2. Doosan BASE TCP 절대 MoveLine으로 실측 그리드의 정확한 Slot Above에 정렬한다.
-3. 정렬 성공 후에만 BASE `-Z 120mm` 하강, position `600` release, 상승한다.
+1. cuRobo가 Slot0 FK와 실측 tray grid offset으로 Slot2 Above를 계획한다.
+2. MoveSplineJoint로 Slot2 Above에 이동한다.
+3. preview 모드이면 정지하고 실제 위치를 육안 확인한다.
+4. release 승인 시에만 BASE `-Z 120mm`, position `600` release, 상승한다.
 
-Slot2의 실측 그리드 목표는 다음과 같다.
-
-```text
-Slot2 release: [400.53, 59.27, 67.36] mm
-Slot2 above:   [400.53, 59.27, 187.36] mm
-```
-
-실기 재검증은 먼저 `execute_marker_place_release:=false`로 수행한다. 로그에
-`TAUGHT_TRAY_SLOT2_BASE_TCP_ALIGN`이 출력되고 실제 Slot2 Above 정렬을 확인한
-후에만 release를 활성화한다.
+이번 실패는 `TAUGHT_TRAY_SLOT2_BASE_TCP_ALIGN MoveLine failed`로 기록하며,
+동일한 이중 TCP 정렬 방식은 다시 사용하지 않는다.

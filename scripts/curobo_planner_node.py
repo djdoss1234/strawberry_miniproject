@@ -20,7 +20,7 @@ from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float64MultiArray, String, Empty, Int32
 from std_srvs.srv import Trigger
-from dsr_msgs2.srv import MoveSplineJoint, MoveJoint, MoveLine
+from dsr_msgs2.srv import MoveSplineJoint, MoveJoint, MoveLine, ChangeOperationSpeed
 
 from curobo.types.base import TensorDeviceType
 from curobo.types.robot import JointState as CuroboJointState, RobotConfig
@@ -409,6 +409,9 @@ class CuroboPlanner(Node):
             Trigger, "/dsr01/gripper/close", callback_group=self.service_cb_group)
         self.cli_gripper_read_state = self.create_client(
             Trigger, "/dsr01/gripper/read_state", callback_group=self.service_cb_group)
+        self.cli_change_op_speed = self.create_client(
+            ChangeOperationSpeed, "/dsr01/motion/change_operation_speed",
+            callback_group=self.service_cb_group)
 
         self.get_logger().info("cuRobo Planner Ready!")
         self.get_logger().info(f"Runtime JSONL: {self.runtime_log.path}")
@@ -998,6 +1001,34 @@ class CuroboPlanner(Node):
         )
         return None
 
+    def _ensure_operation_speed(self, speed: int = 100) -> bool:
+        """컨트롤러 operation speed를 강제 설정한다.
+        Spline req.time이 이행되려면 speed=100 필수.
+        서비스 불가 시 경고 후 계속 진행(비차단)."""
+        if not self.cli_change_op_speed.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn(
+                f"change_operation_speed: service not available; "
+                "speed not enforced — ensure teach pendant is at 100%")
+            return False
+        req = ChangeOperationSpeed.Request()
+        req.speed = speed
+        future = self.cli_change_op_speed.call_async(req)
+        t0 = time.time()
+        while not future.done() and (time.time() - t0) < 5.0:
+            time.sleep(0.05)
+        ok = future.done() and future.result() and future.result().success
+        if ok:
+            self.get_logger().info(f"Operation speed set to {speed}%")
+        else:
+            self.get_logger().warn(
+                f"change_operation_speed({speed}) failed or timed out; continuing")
+        self.runtime_log.log(
+            "operation_speed_set",
+            requested_speed=speed,
+            success=bool(ok),
+        )
+        return ok
+
     def execute_spline(self, traj_rad, motion_time: float) -> bool:
         if not self.cli_spline.wait_for_service(timeout_sec=3.0):
             self.get_logger().error("MoveSplineJoint not available")
@@ -1557,6 +1588,7 @@ class CuroboPlanner(Node):
             f"TAUGHT_TRAY_SLOT{slot_index}_ABOVE generated from Slot0 FK + grid offset: "
             f"clearance={TAUGHT_SLOT0_ABOVE_CLEARANCE_M*1000:.0f}mm "
             f"goal_mm={[round(v * 1000, 1) for v in above_pos_m]}")
+        self._ensure_operation_speed(100)
         above_plan = self.plan(
             retreat_joints, above_pos_m, release_fk_quat,
             num_ik_seeds=64, max_attempts=3, timeout_sec=2.0,

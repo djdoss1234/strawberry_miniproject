@@ -324,6 +324,7 @@ class CuroboPlanner(Node):
         self.declare_parameter("use_taught_slot0_place_reference", False)
         self.declare_parameter("hold_after_taught_slot0_place", True)
         self.declare_parameter("initial_place_slot_index", 0)
+        self.declare_parameter("allow_generated_tray_slot_release", False)
         self.declare_parameter("allow_unverified_grasp_place", False)
         self.declare_parameter("grasp_current_contact_threshold_raw", -1)
         self.declare_parameter("tray_cells_json", "")
@@ -345,6 +346,8 @@ class CuroboPlanner(Node):
             self.get_parameter("hold_after_taught_slot0_place").value)
         self._marker_place_slot_idx = int(
             self.get_parameter("initial_place_slot_index").value)
+        self._allow_generated_tray_slot_release = bool(
+            self.get_parameter("allow_generated_tray_slot_release").value)
         if not 0 <= self._marker_place_slot_idx < TAUGHT_TRAY_SLOT_COUNT:
             raise ValueError(
                 f"initial_place_slot_index must be 0..{TAUGHT_TRAY_SLOT_COUNT - 1}")
@@ -433,6 +436,7 @@ class CuroboPlanner(Node):
             use_taught_slot0_place_reference=self._use_taught_slot0_place_reference,
             hold_after_taught_slot0_place=self._hold_after_taught_slot0_place,
             initial_place_slot_index=self._marker_place_slot_idx,
+            allow_generated_tray_slot_release=self._allow_generated_tray_slot_release,
             allow_unverified_grasp_place=self._allow_unverified_grasp_place,
             grasp_current_contact_threshold_raw=self._grasp_current_contact_threshold_raw,
             marker_place_max_age_sec=self._marker_place_max_age_sec,
@@ -479,6 +483,7 @@ class CuroboPlanner(Node):
             f"release={self._execute_marker_place_release} "
             f"taught_slot0_reference={self._use_taught_slot0_place_reference} "
             f"hold_after_slot0={self._hold_after_taught_slot0_place} "
+            f"allow_generated_slot_release={self._allow_generated_tray_slot_release} "
             f"allow_unverified_grasp={self._allow_unverified_grasp_place} "
             f"max_age={self._marker_place_max_age_sec:.0f}s")
 
@@ -1509,6 +1514,20 @@ class CuroboPlanner(Node):
             self.get_logger().warn(
                 f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_PREVIEW_HOLD: "
                 "above reached; release disabled")
+            return "preview_hold", list(self.current_joints or above_joints)
+
+        if slot_index != 0 and not self._allow_generated_tray_slot_release:
+            self.get_logger().error(
+                f"TAUGHT_TRAY_SLOT{slot_index}_RELEASE_BLOCKED: slot pose is generated "
+                "from the Slot0/1/3 grid and has not been physically taught/verified. "
+                "Holding at Above; teach the actual slot release pose before enabling.")
+            self.runtime_log.log(
+                "generated_tray_slot_release_blocked",
+                slot_index=slot_index,
+                reason="generated_slot_not_physically_verified",
+                above_pos_m=above_pos_m,
+                release_pos_m=release_pos_m,
+            )
             return "preview_hold", list(self.current_joints or above_joints)
 
         if not self.execute_base_z_relative(

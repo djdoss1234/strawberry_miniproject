@@ -586,6 +586,21 @@ Slot2 Above에 이동한 뒤 controller TCP 절대 좌표로 다시 정렬하면
 이번 실패는 `TAUGHT_TRAY_SLOT2_BASE_TCP_ALIGN MoveLine failed`로 기록하며,
 동일한 이중 TCP 정렬 방식은 다시 사용하지 않는다.
 
+### 계산 Slot2 release 오배치와 안전 게이트
+
+2026-06-14 실제 실행에서 계산 Slot2 Above 이동 후 BASE `-Z 120mm` 하강과
+release가 실행됐지만, 육안으로 확인한 실제 Slot2 중심과 일치하지 않았다.
+BASE `-Z`는 정상적인 수직 Place 단계였으나, 그 시작점인 계산 Slot2 Above가
+실측 검증되지 않은 것이 문제였다.
+
+현재 실제 release까지 검증된 고정 pose는 Slot0뿐이다. Slot1/Slot3 TCP는 tray
+간격 계산에 사용했지만, 계산으로 생성한 Slot2~14는 실제 release pose로
+검증되지 않았다. 따라서 `allow_generated_tray_slot_release` 기본값을 `false`로
+추가하여 Slot0 이외의 계산 슬롯에서는 하강/release를 차단한다.
+
+다음 단계는 실제 Slot2 release pose의 joint/TCP를 티칭하고, Slot2 Above 및
+수직 하강을 preview로 검증한 뒤 계산 grid 오차를 판단하는 것이다.
+
 ## 2026-06-14 — KP1 열린 그리퍼 하강 파지 시퀀스
 
 수평 직선 진입 중 잎에 닿아 딸기가 밀리는 문제를 줄이기 위해, 수평 접근

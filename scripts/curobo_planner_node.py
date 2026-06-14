@@ -1453,8 +1453,16 @@ class CuroboPlanner(Node):
         offset_mm = horizontal_idx * (slot3 - slot0) + vertical_idx * (slot1 - slot0)
         return (offset_mm / 1000.0).tolist()
 
+    def _taught_grid_slot_posx_mm_deg(self, slot_index: int, clearance_mm=0.0):
+        """실측 Doosan BASE TCP 좌표계에서 슬롯의 절대 pose를 생성한다."""
+        slot0 = np.array(TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG[:3], dtype=float)
+        offset_mm = np.array(self._taught_grid_slot_offset_m(slot_index)) * 1000.0
+        position_mm = slot0 + offset_mm
+        position_mm[2] += float(clearance_mm)
+        return position_mm.tolist() + TAUGHT_SLOT0_PLACE_REFERENCE_POSX_MM_DEG[3:]
+
     def _execute_taught_slot0_place_reference_after_retreat(self, retreat_joints):
-        """Slot0 FK와 실측 격자 벡터로 생성한 슬롯에 수직 Place한다."""
+        """cuRobo transfer 후 실측 BASE TCP 슬롯에 정렬하여 수직 Place한다."""
         slot_index = self._marker_place_slot_idx
         if not 0 <= slot_index < TAUGHT_TRAY_SLOT_COUNT:
             self.get_logger().error(
@@ -1475,8 +1483,12 @@ class CuroboPlanner(Node):
         ).tolist()
         above_pos_m = list(release_pos_m)
         above_pos_m[2] += TAUGHT_SLOT0_ABOVE_CLEARANCE_M
+        controller_release_posx = self._taught_grid_slot_posx_mm_deg(slot_index)
+        controller_above_posx = self._taught_grid_slot_posx_mm_deg(
+            slot_index, TAUGHT_SLOT0_ABOVE_CLEARANCE_M * 1000.0)
         self.get_logger().info(
-            f"TAUGHT_TRAY_SLOT{slot_index}_ABOVE generated from Slot0 FK + grid offset: "
+            f"TAUGHT_TRAY_SLOT{slot_index}_TRANSFER_ABOVE generated from "
+            f"Slot0 cuRobo FK + grid offset: "
             f"clearance={TAUGHT_SLOT0_ABOVE_CLEARANCE_M*1000:.0f}mm "
             f"goal_mm={[round(v * 1000, 1) for v in above_pos_m]}")
         above_plan = self.plan(
@@ -1490,6 +1502,19 @@ class CuroboPlanner(Node):
             return "failed", retreat_joints
         above_joints = list(above_plan[0][-1].tolist())
 
+        self.get_logger().info(
+            f"TAUGHT_TRAY_SLOT{slot_index}_BASE_TCP_ALIGN target "
+            f"above_xyz={[round(v, 1) for v in controller_above_posx[:3]]}mm "
+            f"release_xyz={[round(v, 1) for v in controller_release_posx[:3]]}mm")
+        if not self.execute_base_line(
+                controller_above_posx,
+                f"TAUGHT_TRAY_SLOT{slot_index}_BASE_TCP_ALIGN",
+                vel_mm_s=TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
+            self.get_logger().error(
+                f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_BLOCKED: "
+                "measured BASE TCP above alignment failed; holding fruit")
+            return "failed", list(self.current_joints or above_joints)
+
         self.runtime_log.log(
             "taught_slot0_place_above_reached",
             slot_index=slot_index,
@@ -1499,6 +1524,8 @@ class CuroboPlanner(Node):
             slot_offset_m=slot_offset_m,
             generated_release_pos_m=release_pos_m,
             above_pos_m=above_pos_m,
+            controller_release_posx_mm_deg=controller_release_posx,
+            controller_above_posx_mm_deg=controller_above_posx,
             above_clearance_m=TAUGHT_SLOT0_ABOVE_CLEARANCE_M,
         )
         if not self._execute_marker_place_release:

@@ -564,3 +564,30 @@ result: TAUGHT_TRAY_SLOT2_PLACE_PREVIEW_HOLD
 따라서 실제 Slot2 수직 하강과 release를 실행하려면 동일 명령에서
 `execute_marker_place_release:=true`로 명시해야 한다. 모서리 하강 clearance를
 아직 확인하지 않았다면 preview 상태를 유지한다.
+
+## 2026-06-14 — Slot2 실제 release 위치 오류 분석 및 수정
+
+실제 release 실행 로그에는 `slot=2`와 Slot2 Above 계획 성공이 기록됐지만,
+육안으로는 Slot2에 정렬되지 않은 위치에서 BASE `-Z` 하강 후 release했다.
+
+원인은 고정 tray grid의 슬롯 간격은 Doosan controller의 실측 BASE TCP 좌표로
+계산하면서, 최종 Above 목표의 기준점은 cuRobo Slot0 FK를 사용한 것이다.
+따라서 로그상 Slot2 계획은 성공해도 실제 controller TCP 기준 Slot2 중심과
+일치한다고 보장할 수 없었다.
+
+수정 후 고정 tray place는 다음 순서로 실행한다.
+
+1. cuRobo가 tray 상부 transfer 경로를 생성하고 실행한다.
+2. Doosan BASE TCP 절대 MoveLine으로 실측 그리드의 정확한 Slot Above에 정렬한다.
+3. 정렬 성공 후에만 BASE `-Z 120mm` 하강, position `600` release, 상승한다.
+
+Slot2의 실측 그리드 목표는 다음과 같다.
+
+```text
+Slot2 release: [400.53, 59.27, 67.36] mm
+Slot2 above:   [400.53, 59.27, 187.36] mm
+```
+
+실기 재검증은 먼저 `execute_marker_place_release:=false`로 수행한다. 로그에
+`TAUGHT_TRAY_SLOT2_BASE_TCP_ALIGN`이 출력되고 실제 Slot2 Above 정렬을 확인한
+후에만 release를 활성화한다.

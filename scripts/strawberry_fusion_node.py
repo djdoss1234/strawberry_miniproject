@@ -182,9 +182,12 @@ class StrawberryFusionNode(Node):
         self.declare_parameter("stem_segment_min_m", 0.005)
         self.declare_parameter("stem_segment_max_m", 0.100)
         self.declare_parameter("stem_total_max_m", 0.160)
-        self.declare_parameter("stem_grasp_offset_from_kp0_m", 0.010)
+        # KP0 바로 위는 과실/잎과 닿기 쉽고, 꺾인 줄기는 전체 chord를 따르면
+        # 측방으로 빗나간다. KP0->KP1 국소 구간의 80% 지점을 목표로 삼는다.
+        # 아래 계산에서 segment 길이의 0.8배로 cap되므로 0.080m는 상한값이다.
+        self.declare_parameter("stem_grasp_offset_from_kp0_m", 0.080)
         self.declare_parameter("stem_grasp_direction_mode", "kp0_to_kp1")
-        self.declare_parameter("grasp_target_base_z_trim_m", 0.010)
+        self.declare_parameter("grasp_target_base_z_trim_m", 0.000)
         self.declare_parameter("infer_every",  3)       # run inference every N camera frames
         self.declare_parameter("stable_hits_required", 4)
         self.declare_parameter("target_position_window_size", 9)

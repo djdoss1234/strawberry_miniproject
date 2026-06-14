@@ -443,5 +443,67 @@ MoveLine 요청: TOOL +Z 180 mm, 50 mm/s
 - 최소 운전 속도율 10%까지 고려하고 10초 여유를 추가한다.
 - 빠른 실기 검증 시에는 티치펜던트 운전 속도율을 먼저 확인한다.
 
-속도율을 올리면 모든 로봇 동작이 함께 빨라지므로, Slot2/12/14 모서리 preview는
-우선 `30%` 정도에서 수행하고 clearance 확인 후 단계적으로 조정한다.
+속도율은 ROS 서비스 `/dsr01/motion/change_operation_speed`로 관리한다. 이후
+실기에서는 `100%`로 설정하고, 사용자가 E-stop을 준비한 상태에서 모서리
+clearance를 확인한다.
+
+## 2026-06-14 — Slot2 preview 결과와 Pick 정책 단순화
+
+ROS 서비스 `/dsr01/motion/change_operation_speed`로 컨트롤러
+`operation_speed_rate`를 `100%`로 변경한 뒤 Slot2 preview를 재실행했다.
+
+### Slot2 preview 결과
+
+Slot2 Place 경로는 실패하지 않았다.
+
+```text
+TAUGHT_TRAY_SLOT2_ABOVE goal: [657.7, 97.3, 185.8] mm
+cuRobo plan latency: 1.63 s
+MoveSplineJoint result: success
+TAUGHT_TRAY_SLOT2_PLACE_PREVIEW_HOLD
+```
+
+`execute_marker_place_release:=false`였기 때문에 Above 도달 후 의도적으로 정지했다.
+이는 Place 경로 실패가 아니라 release/하강 전 안전 preview 성공이다.
+
+### 확인된 시간 병목
+
+| 구간 | 관찰 시간/원인 |
+| --- | --- |
+| pre-approach 후보 탐색 | 약 4.3초, `-10°/-5°` 후보 spline-jump 거부 후 수평 후보 성공 |
+| pre-approach 실행 | 약 3.2초 |
+| final MoveLine | 약 4.6초 |
+| close 및 자동 파지 검증 | 약 13.3초, `read_state` 실패 후 close 재전송 포함 |
+| Slot2 Above 계획 | 약 1.6초 |
+
+### 파지 목표 및 속도 정책 변경
+
+사용자 실기 관찰에 따라 “줄기보다 위에서 잡은 뒤 내리기” 대신, 줄기의 국소
+중간점인 KP1 근처에서 바로 닫고 BASE -Z로 분리하도록 변경했다.
+
+```text
+이전:
+fusion KP0->KP1 최대 10mm + fusion BASE Z 10mm + planner BASE Z 20mm
+
+변경:
+fusion KP0->KP1 구간 80% 지점(KP1 근처)
++ fusion BASE Z 0mm
++ planner BASE Z 0mm
+-> close
+-> BASE -Z detach pull
+```
+
+꺾인 줄기에서도 `KP0 -> KP1` 국소 방향을 사용하므로 `KP0 -> KP2` 전체 chord로
+인한 측방 편차를 줄인다.
+
+계획 및 대기 시간 단축:
+
+- 검증된 수평 `0°` orientation을 첫 후보로 이동했다.
+- pre-approach IK seed를 `48 -> 24`로 줄이고 실패 시 나머지 orientation으로
+  fallback한다.
+- 실제 상태 읽기 실패만으로 close를 재전송하지 않도록 변경했다.
+- close 후 안정화 대기를 `1.5초 -> 0.3초`로 줄였다.
+- 파지 검증 read timeout을 `20초 -> 5초`로 줄였다.
+
+주의: 위 변경은 코드/빌드 검증 상태이며 KP1 근처 실제 파지 정확도와 planning
+latency 개선량은 다음 단일 SW 실기 run에서 확인해야 한다.

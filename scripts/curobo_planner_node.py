@@ -42,7 +42,7 @@ LEFTMOST_WALL_SAFETY_MARGIN_M = -0.030   # 실기 확인: 줄기가 모델 벽 3
 # 근거: 2026-06-09 x=-345mm target, 210mm 진입 성공, 역진 정상
 # available_extra = grasp_offset(50mm) - margin(-30mm) = 80mm → override 불필요
 LEFTMOST_EXTRA_ADVANCE_VEL_MM_S = 50.0    # 직접 접근이므로 고속 진입
-GRASP_Z_BIAS             = 0.020    # +20mm: 잎 위에서 줄기 상단부 파지, BASE -Z 당기기로 분리
+GRASP_Z_BIAS             = 0.000    # fusion이 생성한 KP1 근처 목표를 중복 상승시키지 않음
 PRE_APPROACH_OFFSET      = 0.06     # 6cm 접근 재검증: 직전 측방 편차가 줄기 형상 영향인지 분리
 PRE_APPROACH_SETTLE_SEC  = 0.5      # spline 잔진동이 멈춘 뒤 직선 접근 시작
 FINAL_APPROACH_VEL_MM_S  = 50.0
@@ -89,10 +89,10 @@ GRASP_QUAT_RETRY_VARIANTS: list = [
     ("base",  [1, 0, 0],  +5.0),  # 5° 위 (4차)
 ]
 MEASURED_TCP_GRASP_QUAT_RETRY_VARIANTS: list = [
-    ("base", [1, 0, 0], -10.0),
-    ("base", [1, 0, 0],  -5.0),
     ("base", [1, 0, 0],   0.0),
+    ("base", [1, 0, 0],  -5.0),
     ("base", [1, 0, 0],  +5.0),
+    ("base", [1, 0, 0], -10.0),
     ("base", [1, 0, 0], +10.0),
     ("base", [1, 0, 0], +15.0),
 ]
@@ -111,8 +111,9 @@ TAUGHT_SLOT0_VERTICAL_VEL_MM_S = 40.0   # 계란판 근처 하강/상승 속도
 # 줄기가 잡히면 jaw가 중간에 멈춤(예: ~600~650). 아무것도 없으면 700까지 닫힘.
 # 임계값 이상이면 GRASP_EMPTY 판정.
 GRASP_EMPTY_POSITION_THRESHOLD = 665   # pos >= 665 → fully closed → nothing grabbed
-GRASP_VERIFY_TIMEOUT_SEC       = 20.0  # flange serial open/read 재시도까지 포함
-GRASP_UNVERIFIED_CLOSE_RETRY   = 1     # 명령 ACK 후 상태 읽기 실패 시 close 재전송
+GRASP_VERIFY_TIMEOUT_SEC       = 5.0   # read_state 응답만 짧게 확인
+GRASP_UNVERIFIED_CLOSE_RETRY   = 0     # 상태 읽기 실패만으로 이미 수행한 close를 반복하지 않음
+GRIPPER_CLOSE_SETTLE_SEC       = 0.3   # close 서비스가 동기 완료되므로 짧은 안정화만 적용
 
 # ── 고정 자세 ──────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG     = [88.0,  -80.0, 130.0,   0.0, 20.0,  -90.0]
@@ -1880,7 +1881,7 @@ class CuroboPlanner(Node):
                 # BASE -Z 하강으로 실제 높이에 도달 후 TOOL +Z 진입
                 ee_pre = ee_pre + np.array([0.0, 0.0, CRANE_Z_OFFSET_M])
             r_pre_for_variant = self.plan(
-                self.current_joints, ee_pre.tolist(), q_retry, num_ik_seeds=48
+                self.current_joints, ee_pre.tolist(), q_retry, num_ik_seeds=24
             )
             if r_pre_for_variant is None:
                 grasp_attempt += len(grasp_retry_offsets)
@@ -2144,7 +2145,7 @@ class CuroboPlanner(Node):
             else:
                 self._hold_pick_sequence("gripper_close_failed_retreat_failed")
             return
-        time.sleep(1.5)
+        time.sleep(GRIPPER_CLOSE_SETTLE_SEC)
 
         # 3b. VERIFY_GRASP — 실제 그리퍼 위치를 읽어 파지 여부 판정
         grasp_result, present_pos, present_current_raw, grasp_reason = self._verify_grasp()
@@ -2166,7 +2167,7 @@ class CuroboPlanner(Node):
                 )
                 if not retry_ok:
                     break
-                time.sleep(1.5)
+                time.sleep(GRIPPER_CLOSE_SETTLE_SEC)
                 grasp_result, present_pos, present_current_raw, grasp_reason = (
                     self._verify_grasp())
                 if grasp_result != "GRASP_UNVERIFIED":

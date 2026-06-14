@@ -507,3 +507,60 @@ fusion KP0->KP1 구간 80% 지점(KP1 근처)
 
 주의: 위 변경은 코드/빌드 검증 상태이며 KP1 근처 실제 파지 정확도와 planning
 latency 개선량은 다음 단일 SW 실기 run에서 확인해야 한다.
+
+### KP1 근처 파지 정책 실기 적용 확인
+
+근거 runtime logs:
+
+```text
+logs/runtime/2026-06-14/strawberry_fusion_node_20260614T151243-0d992d6a.jsonl
+logs/runtime/2026-06-14/curobo_planner_node_20260614T151240-6aa797eb.jsonl
+```
+
+이번 target의 keypoint와 실제 생성 목표:
+
+```text
+KP0 = [-124.45, 742.34, 508.94] mm  # 과실에 가까운 줄기 시작점
+KP1 = [-125.43, 742.12, 527.73] mm  # 줄기 국소 중간점
+KP0->KP1 길이 = 18.82 mm
+선택 offset = 15.05 mm = KP0->KP1 구간의 80%
+fusion 목표 = [-125.24, 742.17, 523.97] mm
+planner GRASP_Z_BIAS = 0 mm
+```
+
+즉 파츠 중심이 목표로 하는 물리 지점은 KP0 바로 위나 KP2가 아니라, **KP0에서
+KP1 방향으로 80% 올라간 가는 줄기 부분**이다. 꺾인 줄기에서도 전체 줄기
+`KP0->KP2` chord가 아니라 파지점 주변의 `KP0->KP1` 국소 방향만 사용한다.
+
+현재 Pick 시퀀스:
+
+```text
+1. fusion이 ripe 과실과 KP0/KP1/KP2를 매칭
+2. KP0->KP1 구간 80% 지점을 안정화해 pick target 발행
+3. planner가 같은 높이에서 수평 6cm pre-approach 계획
+4. MoveSplineJoint로 pre-approach 이동
+5. TOOL +Z 180mm 직선 접근
+6. 해당 줄기 위치에서 gripper close
+7. BASE -Z 40mm로 줄기 분리
+8. TOOL -Z 180mm 후퇴
+9. cuRobo로 지정 tray slot Above 이동
+10. preview이면 Above에서 HOLD, release 승인 시 수직 하강/해제/상승
+```
+
+이번 run에서는 첫 수평 orientation 후보가 바로 성공하여 pre-approach 후보
+reject가 `0건`이었고, 이전 run의 약 4.3초 후보 탐색이 약 2.0초 단일 계획으로
+줄었다. close 재전송도 제거되어 close 시작부터 verify 결과까지 약 5.5초로
+감소했다.
+
+Slot2 Place는 실패하지 않았다.
+
+```text
+Slot2 Above cuRobo planning: 1.90 s, success
+MoveSplineJoint: success
+execute_marker_place_release=false
+result: TAUGHT_TRAY_SLOT2_PLACE_PREVIEW_HOLD
+```
+
+따라서 실제 Slot2 수직 하강과 release를 실행하려면 동일 명령에서
+`execute_marker_place_release:=true`로 명시해야 한다. 모서리 하강 clearance를
+아직 확인하지 않았다면 preview 상태를 유지한다.

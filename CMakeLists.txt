@@ -72,6 +72,8 @@ install(PROGRAMS
   scripts/validate_runtime_jsonl.py
   scripts/label_harvest_attempt.py
   scripts/summarize_harvest_kpis.py
+  scripts/safe_grasp_ros_adapter.py
+  scripts/run_safe_grasp_trial.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -26,27 +26,31 @@ ros2 node list | grep -E 'gripper|curobo'
 ros2 service list | grep '/dsr01/drl/'
 ```
 
-## SafeGrasp 서비스 노드 실행
+## 확인된 TCP/DRL 방식 제한
 
-이 노드는 컨트롤러에서 기존 DRL을 정지하고 전용 TCP 서버 DRL을 시작한다.
-현재 Doosan 서비스 경로는 `/dsr01/drl/*`이므로 `service_prefix`는 비워 둔다.
+2026-06-15 실기에서 `dsr_gripper_tcp` TCP 연결은 성공했지만, DRL 내부
+`flange_serial_*` 초기화가 `status 3 (IO error)`로 실패했다. 기존 ROS
+`/dsr01/gripper/flange_serial_*` 방식은 동일한 port/slave/baud 설정으로
+동작하므로, 현재 로봇에서는 아래 ROS 어댑터를 우선 사용한다.
+
+## SafeGrasp ROS 어댑터 실행
+
+기존 `bringup.launch.py`와 `/dsr01/gripper_service_node`를 유지한다.
+`workspace_scan`과 cuRobo planner만 종료한다.
 
 ```bash
 source ~/doosan_ws/install/setup.bash
-ros2 launch dsr_gripper_tcp gripper_service_node.launch.py \
-  controller_host:=110.120.1.66 \
-  namespace:=dsr01 \
-  goal_current:=400 \
-  profile_velocity:=800 \
-  profile_acceleration:=600
+ros2 run e0509_gripper_description safe_grasp_ros_adapter.py
 ```
 
 준비 확인:
 
 ```bash
 ros2 action list | grep safe_grasp
-ros2 topic echo --once /gripper_service/state
 ```
+
+현재 어댑터는 보정용 1단계 구현이다. 닫기 전과 닫기 후 상태를 각각 읽어
+전류/위치 차이를 판정하며, 연속 피드백과 `object_lost` 감시는 아직 하지 않는다.
 
 ## 단일 시험
 

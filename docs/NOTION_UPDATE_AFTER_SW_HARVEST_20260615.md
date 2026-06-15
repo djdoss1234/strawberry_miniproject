@@ -136,14 +136,25 @@ Slot2  Slot5  Slot8  Slot11 Slot14
 
 실측 티칭 좌표:
 
-| 기준 slot | 역할 |
-| --- | --- |
-| Slot0 | 기준 release pose |
-| Slot1 | row pitch 계산 |
-| Slot3 | column pitch 계산 |
+| 기준 slot | 티칭 Joint `[J1,J2,J3,J4,J5,J6] deg` | 티칭 TCP BASE `[x,y,z,rx,ry,rz] mm/deg` | 역할 |
+| --- | --- | --- | --- |
+| Slot0 | `[4.43, 51.79, 119.38, 175.95, 80.84, 93.42]` | `[519.95, 52.39, 65.58, 8.43, 90.35, -87.20]` | 기준 release pose |
+| Slot1 | `[6.02, 50.74, 128.89, 177.59, 89.27, 92.82]` | `[460.24, 55.83, 66.47, 8.43, 90.36, 87.20]` | row pitch 계산 |
+| Slot3 | `[-3.93, 52.00, 120.58, 167.53, 82.38, 94.40]` | `[511.91, 1.83, 63.12, 8.43, 90.37, -87.20]` | column pitch 계산 |
 
 Slot0/1/3 티칭값에서 row/column pitch를 계산해 15개 slot 목표를 생성했다.
 현재 방식은 **marker localization이 아닌 고정 tray 격자 baseline**이다.
+
+위치 계산에 사용한 격자 벡터:
+
+```text
+Slot0 -> Slot1 = [-59.71, +3.44, +0.89]mm
+Slot0 -> Slot3 = [ -8.04,-50.56, -2.46]mm
+```
+
+Slot1은 손목 방향이 Slot0/3과 반대이므로, 생성 slot에는 Slot1의 orientation을
+복사하지 않고 **위치 벡터만 사용**한다. 실제 실행에서는 Slot0의 검증된
+cuRobo FK orientation을 생성 slot의 기준 orientation으로 유지한다.
 
 초기에는 marker localization 결과로 tray가 이동해도 slot을 자동 생성하려고
 했지만, 실기에서 localization timestamp stale, tray-view orientation,
@@ -160,10 +171,41 @@ Slot0/1/3 티칭값에서 row/column pitch를 계산해 15개 slot 목표를 생
 
 | 구분 | 상태 | 방식 |
 | --- | --- | --- |
-| Slot0, Slot1, Slot3, Slot4 | 실기 성공 | Above 이동 후 BASE `-Z` 하강 |
-| Slot2 | 부분 성공 | 30도 tilt, 약 3cm 오차 |
-| Slot5 | 안전 차단 | cuRobo 경로가 수직선에서 `100.8mm` 이탈 |
+| Slot0, Slot1, Slot3 | 실기 성공 | 직접 티칭한 release 기준 좌표 |
+| Slot4 | 실기 성공 | Slot0/1/3 기반 격자 생성 + BASE `-Z` 하강 |
+| Slot2 | **보정 후 정확한 Place 성공** | 격자 생성 + 30° tilt + `[35,-2,0]mm` 보정 |
+| Slot5 | 안전 차단 | Slot2 보정을 확장했으나 cuRobo 경로가 수직선에서 `100.8mm` 이탈 |
 | 나머지 slot | 미검증 | 후속 검증 예정 |
+
+### Slot2 보정 과정
+
+Slot2의 보정 전 격자 계산 위치:
+
+```text
+Slot2 = Slot0 + 2 × (Slot1 - Slot0)
+      = [400.53, 59.27, 67.36]mm
+```
+
+J3 실측 관절 한계 `±135°` 때문에 Slot2를 Slot0과 같은 수직 자세로 접근할 수
+없었다. 이에 row2 전용으로 orientation을 `30°` 기울이고, 기울기에 따른 TCP
+위치 오차를 다음 값으로 보정했다.
+
+```text
+row2_place_pitch_tilt_deg = 30.0°
+row2_release_correction_mm = [+35.0, -2.0, 0.0]
+```
+
+보정이 반영된 Slot2 위치 기준:
+
+```text
+[400.53, 59.27, 67.36] + [35.0, -2.0, 0.0]
+= [435.53, 57.27, 67.36]mm
+```
+
+위 `[435.53,57.27,67.36]mm`는 controller TCP 티칭값으로 계산한 격자/보정
+기준이다. 실제 cuRobo 실행 목표는 동일 위치 벡터와 보정을 Slot0의 cuRobo FK
+파지 중심 좌표에 적용하고, Slot0 FK orientation에 30° tilt를 적용해 생성한다.
+이 보정 후 Slot2 중심에 딱 맞게 Place되는 것을 실기로 확인했다.
 
 Slot5는 경로 생성 자체는 성공했지만 계란판 위 수직 하강선에서 크게 벗어나
 release 전에 차단했다.
@@ -179,8 +221,9 @@ row2는 Cartesian constraint/waypoint IK 또는 collision geometry 보강 전까
 
 **[영상 2 삽입 위치: Place 결과표 아래]**
 
-- 필요 자료: Slot0 또는 Slot4 정상 Place 영상
-- 권장 캡션: `티칭 기준 격자로 생성한 row0/1 slot에 Pick 이후 자동 Place를 수행했다.`
+- 필요 자료: Slot0/1/3 티칭 Place 영상, Slot4 생성 좌표 Place 영상,
+  Slot2 30° tilt 보정 후 정확한 Place 영상
+- 권장 캡션: `직접 티칭한 Slot0/1/3을 기준으로 격자를 생성하고, Slot2는 관절 한계를 고려한 30° tilt와 위치 보정 후 정확히 Place했다.`
 
 **[그래프 2 삽입 위치: Slot5 설명 아래]**
 
@@ -305,7 +348,7 @@ AnyGrasp/GraspGen은 일반 6-DoF grasp 후보 생성기이므로 바로 실제 
 
 - SW 단일딸기의 수평 접근, KP1 파지, 아래 방향 분리, retreat 성공 사례 확보
 - 실측 TCP와 국소 줄기 방향을 반영한 target/파지 모션 개선
-- Pick 이후 Slot0/1/3/4 자동 Place 성공
+- Pick 이후 Slot0/1/3/4 및 보정된 Slot2 Place 성공
 - 위험한 row2 Place 경로를 Cartesian 편차로 실행 전 차단
 - 실행 로그와 KPI 보고서 자동화 기반 구축
 - 원본 SafeGrasp 패키지로 position/current 및 빈 파지 자동 판정 확인

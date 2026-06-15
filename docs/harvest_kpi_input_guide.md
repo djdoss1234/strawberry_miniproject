@@ -2,7 +2,9 @@
 
 ## 언제 입력하는가
 
-실제 로봇의 수확 시도 1회가 끝날 때마다 아래 명령을 한 번 실행한다.
+개발 중 모든 수확 시도를 입력할 필요는 없다. 초기 자동 파지 판정 보정용 표본,
+실패 시도, 무작위 표본에 아래 명령을 실행한다. 최종 성공률을 보고하는 정식
+반복 실험에서는 모든 시도를 입력한다.
 
 ```bash
 cd ~/doosan_ws/src/e0509_gripper_description
@@ -37,6 +39,12 @@ logs/human_labels/YYYY-MM-DD/harvest_attempt_labels.jsonl
 
 ```bash
 python3 scripts/summarize_harvest_kpis.py
+```
+
+runtime JSONL만으로 자동 계산 가능한 계획/시간/접촉 후보 KPI:
+
+```bash
+python3 scripts/summarize_runtime_kpis.py --cell root/nw
 ```
 
 핵심 KPI는 다음 6개다.

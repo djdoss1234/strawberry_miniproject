@@ -152,7 +152,7 @@ else:
 | Slot3 | ✓ 성공 | BASE -Z, 120mm | 티칭 |
 | Slot4 | ✓ 성공 | BASE -Z, 120mm | 생성 |
 | Slot2 | △ 성공 (오차 ~3cm) | cuRobo 30° tilt, 300mm | corr=[35,-2,0] |
-| Slot5 | ✗ 미완 | cuRobo 3-seg 시도 | 뚝뚝 끊기고 위치 오차 |
+| Slot5 | ✗ 안전 차단 | continuous cuRobo + line check | release 경로가 수직선에서 100.8mm 이탈 |
 | 나머지 | 미검증 | — | — |
 
 ---
@@ -160,6 +160,14 @@ else:
 ## 4. 미해결 이슈
 
 ### [우선 1] row2 (Slot5,8,11,14) 개선
+
+2026-06-15 Slot5 검증에서 Above와 release plan은 생성됐지만,
+`ROW2_DESCENT_LINE_CHECK max_deviation=100.8mm limit=20.0mm`로 release 전에
+정상 차단됐다. 허용 편차를 완화하여 강제 실행하지 않고, Cartesian constraint
+또는 collision geometry 보강 전까지 row2 place 검증을 중단한다.
+
+다음 우선순위는 `root/nw` 잎/줄기 가림 수확과 KPI 자동 수집이다. 상세 방향은
+`docs/NW_OCCLUSION_KPI_AND_GRASP_DIRECTION_20260615.md`를 따른다.
 
 **현상**: 3-segment trajectory 실행 시 뚝뚝 끊기고 위치 오차 있음
 

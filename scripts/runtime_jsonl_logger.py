@@ -14,6 +14,8 @@ import numpy as np
 
 
 SCHEMA_VERSION = "strawberry_runtime_event.v1"
+DEFAULT_EXPERIMENT_CONTEXT = os.path.expanduser(
+    "~/doosan_ws/src/e0509_gripper_description/logs/experiment_context.json")
 
 
 def _json_safe(value):
@@ -58,6 +60,17 @@ def _git_commit():
         return "unknown"
 
 
+def _experiment_context():
+    path = os.path.expanduser(os.environ.get(
+        "STRAWBERRY_EXPERIMENT_CONTEXT", DEFAULT_EXPERIMENT_CONTEXT))
+    try:
+        with open(path, "r", encoding="utf-8") as stream:
+            value = json.load(stream)
+        return value if isinstance(value, dict) else {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+
+
 class RuntimeJsonlLogger:
     def __init__(self, node_name, log_root=None):
         self.node_name = str(node_name)
@@ -70,6 +83,7 @@ class RuntimeJsonlLogger:
         os.makedirs(day_dir, exist_ok=True)
         self.path = os.path.join(day_dir, f"{self.node_name}_{self.run_id}.jsonl")
         self.git_commit = _git_commit()
+        self.experiment_context = _experiment_context()
         self._lock = threading.Lock()
         self._write_error_reported = False
 
@@ -82,6 +96,7 @@ class RuntimeJsonlLogger:
             "run_id": self.run_id,
             "node": self.node_name,
             "git_commit": self.git_commit,
+            "experiment_context": _json_safe(self.experiment_context),
             "event": str(event),
             "data": _json_safe(data),
         }

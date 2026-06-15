@@ -149,7 +149,7 @@ DEFAULT_TRAY_CELLS_GLOB = os.path.expanduser(
 OPERATIONAL_JOINT_LIMITS_DEG = [
     (-225.0, 225.0),   # J1
     (-95.0,   95.0),
-    (-155.0, 155.0),
+    (-135.0, 135.0),   # J3: 실측 확인 ±135° (2026-06-15)
     (-280.0, 280.0),   # J4: SW scan pose=262.2°, retreat 시 274° 도달 → ±270° 시 normalize 불연속 발생
     (-130.0, 130.0),
     (-225.0, 225.0),
@@ -331,6 +331,11 @@ class CuroboPlanner(Node):
         self.declare_parameter("marker_place_max_age_sec", 3600.0)
         self.declare_parameter("marker_place_above_clearance_m", 0.100)
         self.declare_parameter(
+            "taught_slot_above_clearance_m", TAUGHT_SLOT0_ABOVE_CLEARANCE_M)
+        self.declare_parameter("row2_place_pitch_tilt_deg", 15.0)
+        self.declare_parameter("row2_release_correction_mm", [0.0, 0.0, 0.0])
+        self.declare_parameter("row2_max_line_deviation_mm", 20.0)
+        self.declare_parameter(
             "leftmost_extra_advance_request_m",
             0.0 if self._measured_tcp_model else LEFTMOST_EXTRA_ADVANCE_REQUEST_M)
         self.declare_parameter(
@@ -361,6 +366,14 @@ class CuroboPlanner(Node):
             self.get_parameter("marker_place_max_age_sec").value)
         self._marker_place_above_clearance_m = float(
             self.get_parameter("marker_place_above_clearance_m").value)
+        self._taught_slot_above_clearance_m = float(
+            self.get_parameter("taught_slot_above_clearance_m").value)
+        self._row2_place_pitch_tilt_deg = float(
+            self.get_parameter("row2_place_pitch_tilt_deg").value)
+        self._row2_release_correction_mm = list(
+            self.get_parameter("row2_release_correction_mm").value)
+        self._row2_max_line_deviation_mm = float(
+            self.get_parameter("row2_max_line_deviation_mm").value)
         self._leftmost_extra_advance_request_m = max(
             0.0, float(self.get_parameter("leftmost_extra_advance_request_m").value))
         self._leftmost_wall_safety_margin_m = float(
@@ -1284,6 +1297,23 @@ class CuroboPlanner(Node):
             state.ee_quaternion[0].detach().cpu().numpy().tolist(),
         )
 
+    def _trajectory_line_deviation_mm(self, traj_rad, start_pos_m, end_pos_m):
+        """FK 궤적의 목표 Cartesian 선분 대비 최대 측방 편차를 계산한다."""
+        q = torch.tensor(traj_rad, device="cuda:0", dtype=torch.float32)
+        state = self.motion_gen.kinematics.get_state(q)
+        points = state.ee_position.detach().cpu().numpy()
+        start = np.array(start_pos_m, dtype=float)
+        end = np.array(end_pos_m, dtype=float)
+        line = end - start
+        line_norm_sq = float(np.dot(line, line))
+        if line_norm_sq < 1e-12:
+            return float("inf"), -1
+        fractions = np.clip(((points - start) @ line) / line_norm_sq, 0.0, 1.0)
+        projected = start + fractions[:, None] * line
+        deviations_mm = np.linalg.norm(points - projected, axis=1) * 1000.0
+        max_index = int(np.argmax(deviations_mm))
+        return float(deviations_mm[max_index]), max_index
+
     def _quat_from_tool_z(self, tool_z, roll_deg=0.0):
         """원하는 world TOOL +Z 방향과 roll로 quaternion [w,x,y,z] 생성."""
         z_axis = np.array(tool_z, dtype=float)
@@ -1577,16 +1607,34 @@ class CuroboPlanner(Node):
             TAUGHT_SLOT0_PLACE_REFERENCE_JOINTS_DEG)
         reference_rad = np.deg2rad(reference_deg).tolist()
         release_fk_pos_m, release_fk_quat = self._curobo_fk_ee_pose(reference_rad)
+        is_row2 = (slot_index % 3 == 2)
+        if is_row2 and self._row2_place_pitch_tilt_deg != 0.0:
+            w, x, y, z = release_fk_quat
+            base_rot = SciR.from_quat([x, y, z, w])
+            tilt_rot = SciR.from_euler('y', self._row2_place_pitch_tilt_deg, degrees=True)
+            tilted = tilt_rot * base_rot
+            q = tilted.as_quat()
+            release_fk_quat = [float(q[3]), float(q[0]), float(q[1]), float(q[2])]
+            self.get_logger().info(
+                f"ROW2_PLACE_TILT: {self._row2_place_pitch_tilt_deg:.1f}deg pitch "
+                f"quat_wxyz={[round(v, 4) for v in release_fk_quat]}")
         slot_offset_m = self._taught_grid_slot_offset_m(slot_index)
         release_pos_m = (
             np.array(release_fk_pos_m, dtype=float)
             + np.array(slot_offset_m, dtype=float)
         ).tolist()
+        if is_row2 and any(v != 0.0 for v in self._row2_release_correction_mm):
+            corr_m = np.array(self._row2_release_correction_mm, dtype=float) / 1000.0
+            release_pos_m = (np.array(release_pos_m, dtype=float) + corr_m).tolist()
+            self.get_logger().info(
+                f"ROW2_RELEASE_CORRECTION: {self._row2_release_correction_mm}mm "
+                f"→ release_pos={[round(v*1000,1) for v in release_pos_m]}mm")
         above_pos_m = list(release_pos_m)
-        above_pos_m[2] += TAUGHT_SLOT0_ABOVE_CLEARANCE_M
+        clearance_m = self._taught_slot_above_clearance_m
+        above_pos_m[2] += clearance_m
         self.get_logger().info(
             f"TAUGHT_TRAY_SLOT{slot_index}_ABOVE generated from Slot0 FK + grid offset: "
-            f"clearance={TAUGHT_SLOT0_ABOVE_CLEARANCE_M*1000:.0f}mm "
+            f"clearance={clearance_m*1000:.0f}mm "
             f"goal_mm={[round(v * 1000, 1) for v in above_pos_m]}")
         self._ensure_operation_speed(100)
         above_plan = self.plan(
@@ -1600,6 +1648,44 @@ class CuroboPlanner(Node):
             return "failed", retreat_joints
         above_joints = list(above_plan[0][-1].tolist())
 
+        row2_descent_plan = None
+        if is_row2:
+            # Preview에서도 release 경로와 측방 편차를 계산해 실제 하강 전에
+            # 안전성을 확인할 수 있게 한다.
+            self.get_logger().info(
+                "TAUGHT_SLOT0_RELEASE_DESCEND cuRobo continuous (row2): "
+                "plan once and validate Cartesian line deviation")
+            row2_descent_plan = self.plan(
+                above_joints, release_pos_m, release_fk_quat,
+                num_ik_seeds=64, max_attempts=3, timeout_sec=2.0,
+                max_joint_delta_deg=MAX_TAUGHT_PLACE_TRANSFER_JOINT_DELTA_DEG)
+            if row2_descent_plan is None:
+                self.get_logger().error(
+                    f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_BLOCKED: "
+                    "release descent plan failed; holding fruit")
+                return "failed", list(self.current_joints or above_joints)
+            row2_traj, _ = row2_descent_plan
+            line_deviation_mm, deviation_index = self._trajectory_line_deviation_mm(
+                row2_traj, above_pos_m, release_pos_m)
+            self.get_logger().info(
+                f"ROW2_DESCENT_LINE_CHECK max_deviation={line_deviation_mm:.1f}mm "
+                f"limit={self._row2_max_line_deviation_mm:.1f}mm "
+                f"waypoint={deviation_index}")
+            self.runtime_log.log(
+                "row2_cartesian_line_check",
+                phase="descent",
+                slot_index=slot_index,
+                max_deviation_mm=line_deviation_mm,
+                limit_mm=self._row2_max_line_deviation_mm,
+                max_deviation_waypoint=deviation_index,
+            )
+            if line_deviation_mm > self._row2_max_line_deviation_mm:
+                self.get_logger().error(
+                    f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_BLOCKED: row2 descent "
+                    f"deviates {line_deviation_mm:.1f}mm from Cartesian line "
+                    f"(limit {self._row2_max_line_deviation_mm:.1f}mm)")
+                return "failed", list(self.current_joints or above_joints)
+
         self.runtime_log.log(
             "taught_slot0_place_above_reached",
             slot_index=slot_index,
@@ -1609,7 +1695,7 @@ class CuroboPlanner(Node):
             slot_offset_m=slot_offset_m,
             generated_release_pos_m=release_pos_m,
             above_pos_m=above_pos_m,
-            above_clearance_m=TAUGHT_SLOT0_ABOVE_CLEARANCE_M,
+            above_clearance_m=clearance_m,
         )
         if not self._execute_marker_place_release:
             self.get_logger().warn(
@@ -1631,14 +1717,32 @@ class CuroboPlanner(Node):
             )
             return "preview_hold", list(self.current_joints or above_joints)
 
-        if not self.execute_base_z_relative(
-                -TAUGHT_SLOT0_ABOVE_CLEARANCE_M,
-                "TAUGHT_SLOT0_RELEASE_DESCEND",
-                TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
-            self.get_logger().error(
-                f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_BLOCKED: "
-                "vertical release descend failed; holding fruit")
-            return "failed", list(self.current_joints or above_joints)
+        if is_row2:
+            # Preview에서 검증한 동일 궤적을 정지 없이 단일 spline으로 실행한다.
+            # 독립 hop/분할 실행은 J4 branch 전환과 구간별 정지를 유발하므로
+            # 사용하지 않는다.
+            self.get_logger().info(
+                "TAUGHT_SLOT0_RELEASE_DESCEND cuRobo continuous (row2): "
+                "executing validated one-spline trajectory")
+            full_traj, full_time = row2_descent_plan
+            if not self.execute_spline(full_traj, full_time):
+                self.get_logger().error(
+                    f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_BLOCKED: "
+                    "continuous descent spline failed; holding fruit")
+                return "failed", list(self.current_joints or above_joints)
+            release_joints = list(full_traj[-1].tolist())
+        else:
+            self.get_logger().info(
+                f"TAUGHT_SLOT0_RELEASE_DESCEND BASE -Z {round(clearance_m*1000)}mm")
+            if not self.execute_base_z_relative(
+                    -clearance_m,
+                    "TAUGHT_SLOT0_RELEASE_DESCEND",
+                    TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
+                self.get_logger().error(
+                    f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_BLOCKED: "
+                    "vertical release descend failed; holding fruit")
+                return "failed", list(self.current_joints or above_joints)
+            release_joints = list(self.current_joints or above_joints)
 
         self.get_logger().warn(
             f"TAUGHT_TRAY_SLOT{slot_index}_PLACE_RELEASE: "
@@ -1652,14 +1756,54 @@ class CuroboPlanner(Node):
         self.gripper_pos_pub.publish(release_msg)
         time.sleep(2.0)
 
-        if not self.execute_base_z_relative(
-                TAUGHT_SLOT0_ABOVE_CLEARANCE_M,
-                "TAUGHT_SLOT0_RELEASE_ASCEND",
-                TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
-            self.get_logger().error(
-                f"TAUGHT_TRAY_SLOT{slot_index}_RELEASED_BUT_ASCEND_FAILED: "
-                "holding position")
-            return "failed_after_release", list(self.current_joints or above_joints)
+        if is_row2:
+            self.get_logger().info(
+                "TAUGHT_SLOT0_RELEASE_ASCEND cuRobo continuous (row2): "
+                "plan once, validate Cartesian line deviation, execute one spline")
+            ascent_plan = self.plan(
+                release_joints, above_pos_m, release_fk_quat,
+                num_ik_seeds=64, max_attempts=3, timeout_sec=2.0,
+                max_joint_delta_deg=MAX_TAUGHT_PLACE_TRANSFER_JOINT_DELTA_DEG)
+            if ascent_plan is None:
+                self.get_logger().error(
+                    f"TAUGHT_TRAY_SLOT{slot_index}_RELEASED_BUT_ASCEND_FAILED: "
+                    "ascent plan failed; holding position")
+                return "failed_after_release", list(self.current_joints or release_joints)
+            asc_traj, asc_time = ascent_plan
+            line_deviation_mm, deviation_index = self._trajectory_line_deviation_mm(
+                asc_traj, release_pos_m, above_pos_m)
+            self.get_logger().info(
+                f"ROW2_ASCENT_LINE_CHECK max_deviation={line_deviation_mm:.1f}mm "
+                f"limit={self._row2_max_line_deviation_mm:.1f}mm "
+                f"waypoint={deviation_index}")
+            self.runtime_log.log(
+                "row2_cartesian_line_check",
+                phase="ascent",
+                slot_index=slot_index,
+                max_deviation_mm=line_deviation_mm,
+                limit_mm=self._row2_max_line_deviation_mm,
+                max_deviation_waypoint=deviation_index,
+            )
+            if line_deviation_mm > self._row2_max_line_deviation_mm:
+                self.get_logger().error(
+                    f"TAUGHT_TRAY_SLOT{slot_index}_RELEASED_BUT_ASCEND_FAILED: "
+                    f"row2 ascent deviates {line_deviation_mm:.1f}mm from Cartesian "
+                    f"line (limit {self._row2_max_line_deviation_mm:.1f}mm)")
+                return "failed_after_release", list(self.current_joints or release_joints)
+            if not self.execute_spline(asc_traj, asc_time):
+                self.get_logger().error(
+                    f"TAUGHT_TRAY_SLOT{slot_index}_RELEASED_BUT_ASCEND_FAILED: "
+                    "continuous ascent spline failed; holding position")
+                return "failed_after_release", list(self.current_joints or release_joints)
+        else:
+            if not self.execute_base_z_relative(
+                    clearance_m,
+                    "TAUGHT_SLOT0_RELEASE_ASCEND",
+                    TAUGHT_SLOT0_VERTICAL_VEL_MM_S):
+                self.get_logger().error(
+                    f"TAUGHT_TRAY_SLOT{slot_index}_RELEASED_BUT_ASCEND_FAILED: "
+                    "holding position")
+                return "failed_after_release", list(self.current_joints or above_joints)
 
         self._marker_place_slot_idx += 1
         self.runtime_log.log(

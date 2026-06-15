@@ -5,15 +5,17 @@
 ## 1. 최신 커밋 이력
 
 ```
+5f949aa docs: confirm original SafeGrasp TCP bridge
+0ee130f feat: validate continuous row2 tray descent
 3c7ea3c feat: enforce operation speed 100% before place spline
 709edf8 docs: add 2026-06-14 handoff for marker tray grid validation
 039088e feat: calibrate marker tray grid with taught pitch
 4fa7c86 safety: block release to unverified generated tray slots
 ```
 
-> ⚠️ 2026-06-15 변경사항은 아직 커밋 안 됨:
-> - `scripts/curobo_planner_node.py`: J3 한계, row2 파라미터, descent/ascent 분기
-> - `config/curobo/e0509_gripper.urdf`: J3 limit ±2.356194 rad
+> J3 한계, row2 파라미터, continuous descent/ascent와 line-deviation guard는
+> `0ee130f`에 커밋됐다. SafeGrasp 및 NW 후속 작업은
+> `docs/HANDOFF_20260615_SAFEGRASP_NW_NEXT.md`를 따른다.
 
 빌드 필요:
 ```bash

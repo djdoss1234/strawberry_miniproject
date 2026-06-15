@@ -93,8 +93,10 @@ python3 scripts/summarize_harvest_kpis.py
 /dsr01/gripper/present_current_raw
 ```
 
-현재 우선 해결할 문제는 실기 로그에서 `present_position=-1`,
-`present_current_raw=-1`이 반복되는 통신 실패다.
+기존 `/dsr01/gripper/read_state` 경로는 `-1/-1`을 반환했지만,
+2026-06-15 원본 `dsr_gripper_tcp`의 `/gripper_service/safe_grasp` 액션과
+`/gripper_service/state`에서 position/current 양방향 판독을 확인했다.
+수확 자동 판정은 원본 SafeGrasp 경로로 통합한다.
 
 진단 명령:
 
@@ -166,9 +168,9 @@ NW multi-view RGB-D
 
 ## 7. 다음 실행 체크리스트
 
-1. `read_state` 서비스가 유효 position/current를 반환하는지 확인
-2. NW 실험 context 한 번 등록
-3. `target_cell:=root/nw` 단일 셀 실행
-4. 자동 runtime KPI 요약
-5. 빈 파지/줄기 파지/잎 접촉 보정 표본만 사람 라벨
+1. 원본 SafeGrasp로 빈 파지/줄기 파지/잎 접촉 보정 표본 수집
+2. cuRobo close/verify 구간을 SafeGrasp action으로 통합
+3. NW 실험 context 한 번 등록
+4. `target_cell:=root/nw` 단일 셀 실행
+5. 자동 runtime KPI 요약 및 필요한 표본만 사람 라벨
 6. AnyGrasp는 실제 로봇 연결 전에 저장 point cloud로 offline 후보 품질 평가

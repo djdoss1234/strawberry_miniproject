@@ -74,6 +74,7 @@ install(PROGRAMS
   scripts/summarize_harvest_kpis.py
   scripts/safe_grasp_ros_adapter.py
   scripts/run_safe_grasp_trial.py
+  scripts/diagnose_gripper_read.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

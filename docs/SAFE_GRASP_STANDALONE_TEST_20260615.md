@@ -31,12 +31,12 @@ ros2 service list | grep '/dsr01/drl/'
 2026-06-15 실기에서 `dsr_gripper_tcp` TCP 연결은 성공했지만, DRL 내부
 `flange_serial_*` 초기화가 `status 3 (IO error)`로 실패했다. 기존 ROS
 `/dsr01/gripper/flange_serial_*` 방식은 동일한 port/slave/baud 설정으로
-동작하므로, 현재 로봇에서는 아래 ROS 어댑터를 우선 사용한다.
+쓰기 명령은 동작했지만, ROS 방식도 FC03 readback이 모두 0바이트였다.
+따라서 현재 장비 구성에서는 아래 어댑터를 수확 자동 판정에 사용하지 않는다.
 
-## SafeGrasp ROS 어댑터 실행
+## SafeGrasp ROS 어댑터 상태
 
-기존 `bringup.launch.py`와 `/dsr01/gripper_service_node`를 유지한다.
-`workspace_scan`과 cuRobo planner만 종료한다.
+어댑터는 구현 및 빌드됐지만 상태 읽기가 복구될 때까지 실험용으로만 보존한다.
 
 ```bash
 source ~/doosan_ws/install/setup.bash
@@ -49,8 +49,9 @@ ros2 run e0509_gripper_description safe_grasp_ros_adapter.py
 ros2 action list | grep safe_grasp
 ```
 
-현재 어댑터는 보정용 1단계 구현이다. 닫기 전과 닫기 후 상태를 각각 읽어
-전류/위치 차이를 판정하며, 연속 피드백과 `object_lost` 감시는 아직 하지 않는다.
+현재 어댑터는 닫기 전 read_state에서 `position=-1`, `current_raw=-1`로
+중단된다. 자세한 진단은 `docs/GRIPPER_BIDIRECTIONAL_DIAGNOSIS_20260615.md`를
+참조한다.
 
 ## 단일 시험
 

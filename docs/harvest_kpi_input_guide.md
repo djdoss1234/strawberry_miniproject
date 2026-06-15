@@ -6,6 +6,31 @@
 실패 시도, 무작위 표본에 아래 명령을 실행한다. 최종 성공률을 보고하는 정식
 반복 실험에서는 모든 시도를 입력한다.
 
+여러 시도를 한 번에 기록할 때는 CSV 라벨 시트를 사용한다.
+
+```bash
+python3 scripts/prepare_harvest_label_sheet.py --cell root/nw
+```
+
+생성 파일:
+
+```text
+reports/harvest_kpi/manual_labels_root_nw.csv
+```
+
+자동 열은 이미 채워진다. 사람이 채울 열은 다음뿐이다.
+
+```text
+stem_grasp, detach, retention, non_target_contact,
+human_intervention, place, notes
+```
+
+누락 확인:
+
+```bash
+python3 scripts/check_harvest_logging.py --cell root/nw
+```
+
 ```bash
 cd ~/doosan_ws/src/e0509_gripper_description
 python3 scripts/label_harvest_attempt.py
@@ -55,6 +80,29 @@ python3 scripts/summarize_runtime_kpis.py --cell root/nw
 4. Place 성공률
 5. 전체 작업 시간
 6. 사람 개입률
+
+## SafeGrasp 자동 판정 범위
+
+`dsr_gripper_tcp`의 `/gripper_service/safe_grasp` 액션은 다음 값을 자동으로
+기록할 수 있다.
+
+- `present_position`, `present_current`, `current_delta`
+- `grasp_detected`: 그리퍼에 접촉 또는 부하가 감지됐는지
+- `object_lost`: 파지 후 물체 이탈이 감지됐는지
+- action 성공 여부와 종료 상태
+
+단, `grasp_detected=true`는 **목표 딸기의 줄기를 정확히 잡았다는 뜻이 아니다.**
+잎이나 다른 구조물을 잡아도 접촉으로 판정될 수 있다. 따라서 SafeGrasp 연동
+후에도 정식 성능 평가에서는 `stem_grasp`, `detach`, `non_target_contact`,
+`place`를 영상 또는 사람 라벨로 확인한다.
+
+SafeGrasp 실기 연동 순서:
+
+1. 기존 그리퍼 실행 노드와 동시에 실행하지 않는다.
+2. 단독 저속 시험으로 `max_current`와 `current_delta_threshold`를 보정한다.
+3. cuRobo pick 시퀀스의 close/read-state 구간을 SafeGrasp action으로 교체한다.
+4. action result와 feedback을 runtime JSONL에 저장한다.
+5. 자동 판정과 사람 라벨을 비교하여 임계값의 precision/recall을 검증한다.
 
 ## Place 안전 게이트
 

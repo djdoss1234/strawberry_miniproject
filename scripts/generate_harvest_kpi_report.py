@@ -47,6 +47,42 @@ def _read_jsonl(paths):
     return records
 
 
+def _read_label_csv(path):
+    import csv
+    labels = []
+    if not path.exists():
+        return labels
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row in csv.DictReader(stream):
+            stem = row.get("stem_grasp", "").strip()
+            detach = row.get("detach", "").strip()
+            retention = row.get("retention", "").strip()
+            place = row.get("place", "").strip()
+            if not any((stem, detach, retention, place)):
+                continue
+            if all(value == "yes" for value in (stem, detach, retention)):
+                pick_success = "success"
+            elif any(value == "no" for value in (stem, detach, retention)):
+                pick_success = "fail"
+            else:
+                pick_success = "unknown"
+            labels.append({
+                "source_runtime_jsonl": row.get("source_runtime_jsonl", ""),
+                "automatic": {
+                    "grasp_result_code": row.get("automatic_grasp_result", "")},
+                "human_label": {
+                    "stem_grasp": stem,
+                    "detach": detach,
+                    "retention": retention,
+                    "non_target_contact": row.get("non_target_contact", "").strip(),
+                    "human_intervention": row.get("human_intervention", "").strip(),
+                    "place": place,
+                },
+                "derived": {"pick_success": pick_success},
+            })
+    return labels
+
+
 def _attempts(records):
     grouped = collections.defaultdict(list)
     for record in records:
@@ -328,6 +364,9 @@ def main():
         ]
     allowed_sources = {r["_source_path"] for r in records}
     labels = _read_jsonl(label_paths)
+    sheet_suffix = (args.cell or "all").replace("/", "_")
+    labels.extend(_read_label_csv(
+        REPO_ROOT / f"reports/harvest_kpi/manual_labels_{sheet_suffix}.csv"))
     if args.cell or args.runtime:
         labels = [
             r for r in labels

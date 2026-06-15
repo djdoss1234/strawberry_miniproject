@@ -26,17 +26,37 @@ ros2 node list | grep -E 'gripper|curobo'
 ros2 service list | grep '/dsr01/drl/'
 ```
 
-## 확인된 TCP/DRL 방식 제한
+## 2026-06-15 원본 패키지 실기 검증 결과
 
-2026-06-15 실기에서 `dsr_gripper_tcp` TCP 연결은 성공했지만, DRL 내부
-`flange_serial_*` 초기화가 `status 3 (IO error)`로 실패했다. 기존 ROS
-`/dsr01/gripper/flange_serial_*` 방식은 동일한 port/slave/baud 설정으로
-쓰기 명령은 동작했지만, ROS 방식도 FC03 readback이 모두 0바이트였다.
-따라서 현재 장비 구성에서는 아래 어댑터를 수확 자동 판정에 사용하지 않는다.
+`Dakae/Doosan-E0509-ROBOTIS-RH-P12-RN-TCP-Bridge`의 원본
+`dsr_gripper_tcp` 패키지가 현재 장비에서 정상 동작함을 확인했다.
+
+- 첫 `INITIALIZE`는 `status 3`으로 실패했지만 TCP bridge 재연결 후
+  `Gripper service node ready at 20.0 Hz` 상태가 됐다.
+- 초기화 실패 로그만 보고 중단하면 안 되며, ready 로그 또는 전체 재시도
+  종료까지 기다려야 한다.
+- `/gripper_service/state`에서 position/current/temperature를 정상 판독했다.
+- 빈 파지 시험에서 `present_position=700`, `present_current=8`,
+  `grasp_detected=false`, `target reached without grasp`를 확인했다.
+
+원본 패키지 실행 전에는 bringup이 실행한 기존
+`/dsr01/gripper_service_node`와 임시 SafeGrasp 어댑터를 종료해야 한다.
+
+```bash
+source ~/doosan_ws/install/setup.bash
+ros2 launch dsr_gripper_tcp gripper_service_node.launch.py \
+  controller_host:=110.120.1.66 \
+  namespace:=dsr01 \
+  stop_existing_drl:=true \
+  initialize_on_start:=true \
+  init_attempts:=10 \
+  goal_current:=400
+```
 
 ## SafeGrasp ROS 어댑터 상태
 
-어댑터는 구현 및 빌드됐지만 상태 읽기가 복구될 때까지 실험용으로만 보존한다.
+임시 어댑터는 기존 `/dsr01/gripper/read_state` 진단용으로만 보존한다.
+수확 자동 판정에는 원본 `/gripper_service/safe_grasp` 액션을 사용한다.
 
 ```bash
 source ~/doosan_ws/install/setup.bash
@@ -49,9 +69,7 @@ ros2 run e0509_gripper_description safe_grasp_ros_adapter.py
 ros2 action list | grep safe_grasp
 ```
 
-현재 어댑터는 닫기 전 read_state에서 `position=-1`, `current_raw=-1`로
-중단된다. 자세한 진단은 `docs/GRIPPER_BIDIRECTIONAL_DIAGNOSIS_20260615.md`를
-참조한다.
+임시 어댑터와 원본 `dsr_gripper_tcp`를 동시에 실행하지 않는다.
 
 ## 단일 시험
 
